@@ -42,6 +42,8 @@ from FTWidgets import TREE_LEFT_W, FileCountTree, FolderTreeWidget, TREE_COL_W, 
 
 # ── Tooltip (extracted) ───────────────────────────────────────────────────────
 from ft_tooltip import _Tooltip, _tip
+from ft_thumbs import scale_to_fit as _thumb_scale_to_fit, make_placeholder as _thumb_placeholder, fit_text as _thumb_fit_text
+from ft_panels import make_main_panel, make_split_panel
 
 try:
     from PIL import Image, ImageTk, ImageFont, ImageDraw, ImageFile
@@ -738,15 +740,12 @@ def thumb_move(source_paths, dest_folder):
         pass
 
 def _scale_to_fit(img, sz):
-    """Scale image to fit within sz×sz box, preserving aspect ratio. Scales both up and down."""
-    from PIL import Image as _Img
-    w, h = img.size
-    if w == 0 or h == 0: return img
-    scale = min(sz / w, sz / h)
-    new_w = max(1, int(w * scale))
-    new_h = max(1, int(h * scale))
-    if new_w == w and new_h == h: return img
-    return img.resize((new_w, new_h), _Img.BILINEAR)
+    """Scale image to fit within sz×sz box, preserving aspect ratio.
+
+    Delegates to ft_thumbs so other FileTagger apps can share the same behaviour.
+    """
+    return _thumb_scale_to_fit(img, sz)
+
 
 def _file_size_info(path):
     try: sz = os.path.getsize(path)
@@ -791,25 +790,11 @@ def _file_size_info_cached(path):
 
 def _fit_text(text, max_px, font_spec=("Segoe UI", 9)):
     """Return text truncated with '…' so it fits within max_px pixels.
-    Uses tkinter font measurement — accurate for the actual render font."""
-    try:
-        import tkinter.font as tkfont
-        f = tkfont.Font(family=font_spec[0], size=font_spec[1])
-        if f.measure(text) <= max_px:
-            return text
-        # Binary-search the cut point
-        lo, hi = 1, len(text)
-        while lo < hi:
-            mid = (lo + hi + 1) // 2
-            if f.measure(text[:mid] + "…") <= max_px:
-                lo = mid
-            else:
-                hi = mid - 1
-        return text[:lo] + "…"
-    except Exception:
-        # Fallback: rough char-based clip (approx 7px per char at size 9)
-        max_chars = max(1, max_px // 7)
-        return text if len(text) <= max_chars else text[:max_chars - 1] + "…"
+
+    Delegates to ft_thumbs so thumbnail label fitting can be shared.
+    """
+    return _thumb_fit_text(text, max_px, font_spec)
+
 
 def _get_pdf_info(path):
     if not HAVE_FITZ: return 0, ""
@@ -1248,6 +1233,12 @@ class FileTagger:
         self._selected          = set()   # paths currently selected (Ctrl/Shift+click)
         self._last_click_idx    = None    # index of last clicked cell for Shift+click range
         self._panel_mode        = "1"     # "1" = 1-panel, "2" = 2-panel Folder+Selection
+        # PanelState foundation: mirrors current behaviour without replacing existing flags yet.
+        # Long term, these panel slots become the source of truth for thumbs/floating/zoom panels.
+        self.panels = [
+            make_main_panel(cell_size=THUMB_SIZE),
+            make_split_panel("right", cell_size=THUMB_SIZE),
+        ]
         self._placed            = []      # ordered right-panel list (2-panel)
         self._placed_set        = set()   # fast membership for _placed
         self._right_sel         = set()   # paths selected in right panel
@@ -1292,6 +1283,7 @@ class FileTagger:
         self.lbl_sb_culled_local = None
         self.lbl_sb_coll         = None
         self._welcome_card       = None
+        self._last_add_collection = ""   # remembers last target used by Add to Collection
         self._jump_var     = tk.StringVar() if root else None
         self._build_ui(root)
         self.win.after(500, self._init_mode)
@@ -1325,6 +1317,11 @@ class FileTagger:
             self._save_current_collection()
         cfg = self.mode_cfg
         root_dir = cfg['root']
+        try:
+            self.panels[0].state.set_source("folder", [], header_text=root_dir,
+                                            source_path=root_dir, cell_size=self._disp_size)
+        except Exception:
+            pass
         self.tagged.clear(); self.tagged_at.clear(); self.collection = ""
         self._in_cull_view    = False
         self._in_tagged_view  = False
@@ -1468,6 +1465,11 @@ class FileTagger:
             global PHOTOS_ROOT; PHOTOS_ROOT = new_root
         else:
             global PDFS_ROOT; PDFS_ROOT = new_root
+        try:
+            self.panels[0].state.set_source("folder", [], header_text=new_root,
+                                            source_path=new_root, cell_size=self._disp_size)
+        except Exception:
+            pass
         # Reset all view state
         self._in_tagged_view  = False
         self._in_cull_view    = False
@@ -3456,25 +3458,42 @@ class FileTagger:
                 no_cache += 1
                 renders.append((orig, start_idx + i, None, False, False))
 
-        # Single after() call renders all cells then signals completion
+        # Render cells in small chunks so Tk can paint the grid progressively.
+        # This avoids one long UI callback making an early cell appear to lag behind.
         def _render_all(renders=renders, gen=gen, no_cache=no_cache, new_items=new_items):
             if self._load_gen != gen: return
             try: self.grid_frame.pack_propagate(False)
             except: pass
-            for orig, idx, img, from_cache, is_ghost in renders:
-                if img is None:
-                    try:
-                        from PIL import Image as _PImg
-                        col = (30, 0, 0) if is_ghost else (50, 50, 50)
-                        img = _PImg.new('RGB', (self._disp_size, self._disp_size), col)
-                    except: continue
-                self._add_cell_from_img(orig, idx, img, from_cache, gen, is_ghost)
-            try: self.grid_frame.pack_propagate(True)
-            except: pass
-            self._load_complete(gen, no_cache, 0, start_idx)
-            # Only refresh tree tick if new thumbnails were written to blob
-            if new_items:
-                self.win.after(500, self._refresh_tree_stats)
+
+            batch_size = 12
+            state = {"i": 0}
+
+            def _render_chunk():
+                if self._load_gen != gen: return
+                i = state["i"]
+                end = min(i + batch_size, len(renders))
+                for orig, idx, img, from_cache, is_ghost in renders[i:end]:
+                    if img is None:
+                        try:
+                            img = _thumb_placeholder(self._disp_size, is_ghost)
+                        except:
+                            continue
+                    self._add_cell_from_img(orig, idx, img, from_cache, gen, is_ghost)
+                state["i"] = end
+
+                if end < len(renders):
+                    self.win.after(1, _render_chunk)
+                    return
+
+                try: self.grid_frame.pack_propagate(True)
+                except: pass
+                self._load_complete(gen, no_cache, 0, start_idx)
+                # Only refresh tree tick if new thumbnails were written to blob
+                if new_items:
+                    self.win.after(500, self._refresh_tree_stats)
+
+            _render_chunk()
+
         self.win.after(0, _render_all)
 
     def _render_one(self, orig, idx, img, from_cache, is_ghost, gen):
@@ -6861,7 +6880,16 @@ class FileTagger:
         for c in cols:
             lb.insert("end", c)
         if cols:
-            lb.selection_set(0)
+            try:
+                default_idx = cols.index(getattr(self, "_last_add_collection", ""))
+            except ValueError:
+                default_idx = 0
+            lb.selection_clear(0, "end")
+            lb.selection_set(default_idx)
+            lb.activate(default_idx)
+            lb.see(default_idx)
+            # Some Tk builds do not visibly scroll until after layout completes.
+            lb.after(50, lambda i=default_idx: (lb.see(i), lb.activate(i)))
 
         def _update_info(e=None):
             sel = lb.curselection()
@@ -6898,6 +6926,7 @@ class FileTagger:
                     added += 1
             order = list(data.keys())
             _write_collection(cname, root, set(data.keys()), data, order)
+            self._last_add_collection = cname
             dlg.destroy()
             self._status(f"✓  {added} file{'s' if added!=1 else ''} added to '{cname}'")
             self._refresh_collection_list()
