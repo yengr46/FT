@@ -1,8 +1,8 @@
 """
 FTWidgets.py  —  Shared widget library
-Version: 23:44 26-Apr-2026
-Version: 22:00 26-Apr-2026
-Version: 17:54 26-Apr-2026 for the FileTagger suite.
+Version: 09:44 AEST 27-Apr-2026
+Version: 08:00 AEST 27-Apr-2026
+Version: 03:54 AEST 27-Apr-2026 for the FileTagger suite.
 
 Provides:
     FolderTreeWidget   — standardised folder tree with optional data columns
@@ -19,6 +19,7 @@ and custom colour coding (as in FTDBXnew.py).
 import os
 import tkinter as tk
 from tkinter import ttk
+from tkinter import messagebox
 
 try:
     from PIL import Image, ImageTk, ImageOps, ImageFile
@@ -61,6 +62,26 @@ def _longpath(p):
     if sys.platform == "win32" and not p.startswith("\\\\?\\"):
         return "\\\\?\\" + os.path.abspath(p)
     return p
+
+def _has_subdirs(path):
+    """
+    Return True if path has at least one real child directory.
+
+    Symlinked/junction-like entries are ignored so leaf folders do not show
+    misleading expand markers in the UI.
+    """
+    try:
+        for entry in os.scandir(_longpath(path)):
+            try:
+                if entry.is_symlink():
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    return True
+            except OSError:
+                continue
+        return False
+    except Exception:
+        return False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -258,7 +279,12 @@ class FolderTreeWidget(tk.Frame):
     def _apply_style(self):
         """Apply consistent FT style to the Treeview."""
         sty = ttk.Style()
-        sty.theme_use("vista")
+        # "vista" is Windows-only; fall back gracefully on other platforms.
+        try:
+            if "vista" in sty.theme_names():
+                sty.theme_use("vista")
+        except Exception:
+            pass
         sty.configure(TREE_STYLE_ID,
                        background=TREE_BG,
                        foreground=TREE_FG,
@@ -349,13 +375,10 @@ class FolderTreeWidget(tk.Frame):
 
     def _populate_root(self, path):
         """Populate full tree from root — all levels shown, root open."""
-        import time as _time
-        t0 = _time.time()
         self._tree.delete(*self._tree.get_children())
         root_label = os.path.basename(path) or path
         self._tree.insert("", "end", iid=path, text=f"  {root_label}", open=True)
         self._populate_level(path)
-        print(f"DEBUG _populate_root took {_time.time()-t0:.2f}s for {path}")
         if self._show_root_entry and hasattr(self, '_root_count'):
             try:
                 n = len([e for e in os.scandir(_longpath(path)) if e.is_dir()])
@@ -381,8 +404,9 @@ class FolderTreeWidget(tk.Frame):
         if self._tree.exists(path): return
         self._tree.insert(parent, "end", iid=path,
                            text=f"  {label}", open=False, tags=tags)
-        self._tree.insert(path, "end",
-                          iid=f"{path}{self.PLACEHOLDER}", text="")
+        if _has_subdirs(path):
+            self._tree.insert(path, "end",
+                              iid=f"{path}{self.PLACEHOLDER}", text="")
 
     def _on_node_open(self, path):
         """User expanded a node — replace placeholder with real children."""
@@ -402,11 +426,7 @@ class FolderTreeWidget(tk.Frame):
             for child in self._tree.get_children(path):
                 self._tree.delete(child)
             # Re-insert placeholder so expand arrow remains
-            try:
-                has_subdirs = any(e.is_dir() for e in os.scandir(_longpath(path)))
-            except Exception:
-                has_subdirs = False
-            if has_subdirs:
+            if _has_subdirs(path):
                 self._tree.insert(path, "end",
                                   iid=f"{path}{self.PLACEHOLDER}", text="")
             self._tree.item(path, open=False)
@@ -857,8 +877,9 @@ class FTFilerTree(FolderTreeWidget):
         if self._tree.exists(path): return
         self._tree.insert(parent, "end", iid=path,
                            text=f"  {label}", open=False, tags=("no_file",))
-        self._tree.insert(path, "end",
-                          iid=f"{path}{self.PLACEHOLDER}", text="")
+        if _has_subdirs(path):
+            self._tree.insert(path, "end",
+                              iid=f"{path}{self.PLACEHOLDER}", text="")
 
     def _on_node_open(self, path):
         """Expand node — replace placeholder, check files, populate children."""
