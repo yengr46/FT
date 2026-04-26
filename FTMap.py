@@ -291,7 +291,7 @@ class FTMap(tk.Tk):
                 self._paned.sash_place(1, 1205, 0)
                 # Inner sash: tree 300 | files 300
                 try:
-                    self._left_paned.sash_place(0, 310, 0)  # tree widget actual width at 125% DPI
+                    self._left_paned.sash_place(0, 330, 0)  # tree widget actual width at 125% DPI
                 except Exception: pass
             else:
                 # Embedded: file list (300) | image (600) | map
@@ -640,18 +640,24 @@ class FTMap(tk.Tk):
         new_idx = sel[0]
         if new_idx == self._file_idx: return
         self._file_idx = new_idx
-        self._load_image(self._file_list[self._file_idx])
+        path = self._file_list[self._file_idx]
+        coords = self._gps_data.get(path) or _get_gps_coords(path)
+        self._set_selected(path, coords)
 
     def _navigate(self, direction):
         if not self._file_list: return
         new_idx = self._file_idx + direction
         if new_idx < 0 or new_idx >= len(self._file_list): return
         self._file_idx = new_idx
-        self._lb_select(self._file_idx)
-        self._load_image(self._file_list[self._file_idx])
+        path = self._file_list[self._file_idx]
+        coords = self._gps_data.get(path) or _get_gps_coords(path)
+        self._set_selected(path, coords)
 
     def _load_image(self, path):
-        """Called when user selects a file. Updates display AND map marker."""
+        """Load a file into the image panel and update labels only.
+
+        Selection/list/map synchronisation is handled by _set_selected().
+        """
         self._current_path = path
         self._path_lbl.config(text=path)
         if self._mode == "standalone" and self._file_list:
@@ -659,19 +665,13 @@ class FTMap(tk.Tk):
                 text=f"{self._file_idx + 1} of {len(self._file_list)}")
         self.title(f"FTMapimg - {os.path.basename(path)}")
         self._show_image(path)
-        # Update map marker — does NOT call back to _load_image
-        import pathlib
-        p = pathlib.Path(path)
+
         coords = self._gps_data.get(path) or _get_gps_coords(path)
         if coords:
             self._gps_data[path] = coords
             self._img_info.config(text=f"GPS: {coords[0]:.5f}, {coords[1]:.5f}")
-            if self._map_ready:
-                self._select_marker(p, coords, update_image=False)
         else:
             self._img_info.config(text="No GPS data")
-            if self._map_ready:
-                self._sync_list_to(p)
 
     def _show_image(self, path):
         """Load and display image in the image panel. No map interaction."""
@@ -718,14 +718,14 @@ class FTMap(tk.Tk):
     def _build_map(self, center_path, center_coords, nearby_data):
         """Initialise map with markers. Called after map widget is ready."""
         if not self.map_widget: return
-        self._map_ready    = True
-        self._center_path  = center_path
+        self._map_ready     = True
+        self._center_path   = center_path
         self._center_coords = center_coords
-        self._nearby_data  = nearby_data
+        self._nearby_data   = nearby_data
 
         # Fit map to all markers
-        all_lats = [center_coords[0]] + [c[0] for _,c,_ in nearby_data]
-        all_lons = [center_coords[1]] + [c[1] for _,c,_ in nearby_data]
+        all_lats = [center_coords[0]] + [c[0] for _, c, _ in nearby_data]
+        all_lons = [center_coords[1]] + [c[1] for _, c, _ in nearby_data]
         if len(all_lats) > 1:
             self.map_widget.fit_bounding_box(
                 (max(all_lats)+0.01, min(all_lons)-0.01),
@@ -734,116 +734,113 @@ class FTMap(tk.Tk):
             self.map_widget.set_position(center_coords[0], center_coords[1])
             self.map_widget.set_zoom(12)
 
-        # Place markers
+        # Place markers using stable string keys so old red pins are always found.
         self._all_markers   = {}
         self._marker_coords = {}
         self._marker_km     = {}
 
-        import pathlib
-        self._marker_coords[center_path] = center_coords
-        self._marker_km[center_path]     = 0.0
+        center_key = self._marker_key(center_path)
+        self._marker_coords[center_key] = center_coords
+        self._marker_km[center_key]     = 0.0
         m = self.map_widget.set_marker(
             center_coords[0], center_coords[1],
             text="", icon=self._pin_green, icon_anchor="s",
-            command=lambda mk, p=center_path, c=center_coords:
-                self._select_marker(p, c))
-        self._all_markers[center_path] = m
+            command=lambda mk, p=center_key, c=center_coords:
+                self._set_selected(p, c))
+        self._all_markers[center_key] = m
 
         for p, coords, km in nearby_data:
-            self._marker_coords[p] = coords
-            self._marker_km[p]     = km
+            p_key = self._marker_key(p)
+            self._marker_coords[p_key] = coords
+            self._marker_km[p_key]     = km
             mk = self.map_widget.set_marker(
                 coords[0], coords[1],
                 text="", icon=self._pin_green, icon_anchor="s",
-                command=lambda mk, _p=p, _c=coords:
-                    self._select_marker(_p, _c))
-            self._all_markers[p] = mk
+                command=lambda mk, _p=p_key, _c=coords:
+                    self._set_selected(_p, _c))
+            self._all_markers[p_key] = mk
 
         # Highlight starting selection
-        self._select_marker(center_path, center_coords)
+        self._set_selected(center_key, center_coords)
 
         n_gps = 1 + len(nearby_data)
         self._gps_count_lbl.config(
             text=f"{n_gps} image{'s' if n_gps!=1 else ''} with GPS  |  OpenStreetMap")
 
+    def _marker_key(self, path):
+        """Return a stable string key for marker dictionaries."""
+        return os.path.normcase(os.path.normpath(str(path)))
+
+    def _set_selected(self, path, coords=None):
+        """Single selection path for list, image and map marker updates."""
+        key = self._marker_key(path)
+
+        if coords and self._map_ready:
+            self._select_marker(key, coords, update_image=False)
+
+        file_lookup = {self._marker_key(p): p for p in self._file_list}
+        actual_path = file_lookup.get(key)
+
+        if actual_path:
+            try:
+                self._file_idx = self._file_list.index(actual_path)
+                self._lb_select(self._file_idx)
+            except ValueError:
+                pass
+            self._load_image(actual_path)
+        else:
+            self._sync_list_to(key)
+
     def _select_marker(self, path, coords, update_image=True):
-        """Make path's marker red (selected), restore previous to green."""
+        """Make exactly one marker red; restore the previous selected marker to green."""
         if not self.map_widget: return
 
-        # Restore old selection to green
+        path_key = self._marker_key(path)
+
+        # Restore old selection to green.
         prev = self._selected_path
-        if prev and prev in self._all_markers and prev != path:
+        if prev and prev != path_key:
             prev_coords = self._marker_coords.get(prev)
-            try: self._all_markers[prev].delete()
-            except: pass
+            prev_marker = self._all_markers.get(prev)
+            if prev_marker:
+                try: prev_marker.delete()
+                except Exception: pass
             if prev_coords:
                 new_mk = self.map_widget.set_marker(
                     prev_coords[0], prev_coords[1],
                     text="", icon=self._pin_green, icon_anchor="s",
                     command=lambda mk, _p=prev, _c=prev_coords:
-                        self._select_marker(_p, _c))
+                        self._set_selected(_p, _c))
                 self._all_markers[prev] = new_mk
 
-        # Make selected marker red and on top
-        self._selected_path = path
-        if path in self._all_markers:
-            try: self._all_markers[path].delete()
-            except: pass
+        # Make selected marker red and on top.
+        self._selected_path = path_key
+        old_marker = self._all_markers.get(path_key)
+        if old_marker:
+            try: old_marker.delete()
+            except Exception: pass
         new_mk = self.map_widget.set_marker(
             coords[0], coords[1],
             text="", icon=self._pin_red, icon_anchor="s",
-            command=lambda mk, _p=path, _c=coords:
-                self._select_marker(_p, _c))
-        self._all_markers[path] = new_mk
+            command=lambda mk, _p=path_key, _c=coords:
+                self._set_selected(_p, _c))
+        self._all_markers[path_key] = new_mk
+        self._marker_coords[path_key] = coords
 
-        self._sync_list_to(path)
-
-        # Update image panel — load folder if needed, then select file
         if update_image:
-            str_path = str(path)
-            # If file not in current list, load its parent folder first
-            if str_path not in self._file_list:
-                folder = os.path.dirname(str_path)
-                if os.path.isdir(folder):
-                    from FTWidgets import _longpath
-                    try:
-                        import os as _os
-                        file_list = [
-                            os.path.join(folder, f)
-                            for f in os.listdir(folder)
-                            if os.path.splitext(f)[1].lower() in PHOTO_EXTS
-                        ]
-                        file_list.sort()
-                        self._file_list = file_list
-                        self._file_idx  = 0
-                        self._gps_flags = {}
-                        self._gps_data  = {}
-                        self._populate_list()
-                    except Exception:
-                        pass
-            if str_path in self._file_list:
-                try:
-                    self._file_idx = self._file_list.index(str_path)
-                    self._lb_select(self._file_idx)
-                except ValueError:
-                    pass
-                self._current_path = str_path
-                self._path_lbl.config(text=str_path)
-                coords2 = self._gps_data.get(str_path, coords)
-                self._img_info.config(
-                    text=f"GPS: {coords2[0]:.5f}, {coords2[1]:.5f}")
-                self._show_image(str_path)
+            self._set_selected(path_key, coords)
 
     def _sync_list_to(self, path):
         if self._lb is None: return
         try:
             self._lb.unbind("<<ListboxSelect>>")
             self._lb.selection_clear(0, "end")
-            str_path = str(path)
-            if str_path in self._file_list:
-                idx = self._file_list.index(str_path)
-                self._lb.selection_set(idx)
-                self._lb.see(idx)
+            path_key = self._marker_key(path)
+            for idx, item_path in enumerate(self._file_list):
+                if self._marker_key(item_path) == path_key:
+                    self._lb.selection_set(idx)
+                    self._lb.see(idx)
+                    break
         except Exception: pass
         finally:
             self._lb.bind("<<ListboxSelect>>", self._on_list_select)
