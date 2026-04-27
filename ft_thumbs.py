@@ -123,3 +123,20 @@ def build_decorations(*, selected=False, culled=False, edited=False, unreadable=
         "group_badge": group_badge,
         "count_badge": count_badge,
     }
+
+def get_thumbnail(path: str, sz: int, longpath_func=None):
+    """Safe thumbnail loader.
+
+    Always returns:
+        (image, success_flag, error_text)
+
+    Uses the existing ft_thumbs pipeline:
+        open_image_rgb -> make_thumb_from_image -> make_placeholder on failure
+    """
+    try:
+        img = open_image_rgb(path, longpath_func=longpath_func)
+        img = make_thumb_from_image(img, sz)
+        return img, True, None
+    except Exception as e:
+        return make_placeholder(sz), False, str(e)
+
