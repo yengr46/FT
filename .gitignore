@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs
+*.log
+FTVideo_error.log
+
+# INI / config (contain local paths — not portable)
+# Comment these out if you want to track INI files
+FTVideo.ini
+FTMenu.ini
+
+# Thumbnail disk cache (regenerated on demand)
+ft_thumb_cache/
+
+# Temp / editor
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+
+# Zip snapshots
+*.zip

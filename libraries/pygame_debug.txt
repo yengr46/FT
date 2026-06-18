@@ -1,0 +1,2 @@
+Python: C:\Users\Ian\AppData\Local\Programs\Python\Python311-32\python.exe
+Error: No module named 'pygame'
