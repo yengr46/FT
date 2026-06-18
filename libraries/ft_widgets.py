@@ -1669,6 +1669,9 @@ class SortableFileList(tk.Frame):
         sb.pack(side="right", fill="y")
         self._tree.pack(side="left", fill="both", expand=True)
 
+        # Ctrl-selection highlight (applied via set_ctrl_selected)
+        self._tree.tag_configure("ctrl_sel", background="#c8e6ff", foreground="black")
+
         self._tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self._tree.bind("<ButtonRelease-1>",  self._on_tree_click)
 
@@ -1765,6 +1768,29 @@ class SortableFileList(tk.Frame):
             pass
         finally:
             self._syncing = False
+
+    def set_ctrl_selected(self, indices):
+        """Highlight rows that are ctrl-selected in the thumbnail panel.
+
+        indices : iterable of integer file indices to mark with the blue tint.
+        Any row not in *indices* has the tag removed.
+        """
+        want = set(indices)
+        for iid in self._tree.get_children(""):
+            try:
+                idx_val = int(iid)
+            except ValueError:
+                continue
+            tags = list(self._tree.item(iid, "tags") or ())
+            has  = "ctrl_sel" in tags
+            need = idx_val in want
+            if need == has:
+                continue
+            if need:
+                tags.append("ctrl_sel")
+            else:
+                tags.remove("ctrl_sel")
+            self._tree.item(iid, tags=tags)
 
     def _on_tree_select(self, _event=None):
         if self._syncing:

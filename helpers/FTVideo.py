@@ -1406,6 +1406,7 @@ class FTVideo(tk.Tk):
                 self._last_ctrl_op = "select"
             self._thumb_sel_anchor = idx
             self._redraw_thumb_select(idx)
+            self._update_file_list_ctrl_selection()
             self._load_video_for_index(idx)
 
         elif shift:
@@ -1422,6 +1423,7 @@ class FTVideo(tk.Tk):
                 changed.add(i)
             for i in changed:
                 self._redraw_thumb_select(i)
+            self._update_file_list_ctrl_selection()
             self._load_video_for_index(idx)
 
         else:
@@ -1491,6 +1493,13 @@ class FTVideo(tk.Tk):
                 except Exception as e:
                     print(f"add_clips_to_strip: {e}")
 
+    def _update_file_list_ctrl_selection(self):
+        """Sync the file-list ctrl-selection highlight with _thumb_selected."""
+        try:
+            self.file_list_widget.set_ctrl_selected(self._thumb_selected)
+        except Exception:
+            pass
+
     def _redraw_thumb_select(self, idx):
         """Update one thumbnail's background and SELECTED watermark."""
         cell = self.thumb_cells.get(idx)
@@ -1520,13 +1529,15 @@ class FTVideo(tk.Tk):
             if selected:
                 labels = self.thumb_labels.get(idx, ())
                 img_lbl = labels[0] if labels else None
+                wm_w, wm_h = 74, 16
+                x, y = 4, 4
                 if img_lbl is not None:
-                    wm_w, wm_h = 74, 16
-                    x = img_lbl.winfo_x() + max(0, (img_lbl.winfo_width()  - wm_w) // 2)
-                    y = img_lbl.winfo_y() + max(0,  img_lbl.winfo_height() - wm_h - 4)
-                else:
-                    wm_w, wm_h = 74, 16
-                    x, y = 4, 4
+                    info = img_lbl.place_info()
+                    iw = int(info.get('width',  '') or 0)
+                    ih = int(info.get('height', '') or 0)
+                    if iw > 0 and ih > 0:
+                        x = int(info.get('x', '') or 0) + max(0, (iw - wm_w) // 2)
+                        y = int(info.get('y', '') or 0) + ih - wm_h - 4
                 lbl.place(x=x, y=y, width=wm_w, height=wm_h)
                 lbl.lift()
             else:

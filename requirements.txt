@@ -1,0 +1,11 @@
+# FTAPPS dependencies
+# Install with:  pip install -r requirements.txt
+
+Pillow>=10.0.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+pygame>=2.5.0
+PyMuPDF>=1.23.0
+piexif>=1.1.3
+fpdf2>=2.7.0
+python-vlc>=3.0.18122

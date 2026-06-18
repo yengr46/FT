@@ -1821,10 +1821,10 @@ class MoviePlayerPanel(tk.Frame):
         self.scrub_var = tk.IntVar(value=0)
 
         # ── Scrub position track ──────────────────────────────────────
-        self._scrub_canvas = tk.Canvas(scrub_bar, bg="#0a1a2a", height=32,
+        self._scrub_canvas = tk.Canvas(scrub_bar, bg="#0a1a2a", height=15,
                                        highlightthickness=0,
                                        cursor="sb_h_double_arrow")
-        self._scrub_canvas.pack(fill="x", padx=8, pady=(4, 3))
+        self._scrub_canvas.pack(fill="x", padx=8, pady=(2, 2))
         self._scrub_canvas.bind("<ButtonPress-1>",   self._scrub_press)
         self._scrub_canvas.bind("<B1-Motion>",       self._scrub_drag)
         self._scrub_canvas.bind("<ButtonRelease-1>", self._scrub_release)
@@ -1844,6 +1844,7 @@ class MoviePlayerPanel(tk.Frame):
                 seek_to             = self._seek_to_frame,
                 on_commit           = self._on_edit_done,
                 on_markers_changed  = self._on_markers_changed,
+                on_split_delete     = self._on_pending_split_delete,
                 bg=SCRUB_BG,
             )
             self.marker_bar.grid(row=3, column=0, sticky="ew")
@@ -1912,6 +1913,32 @@ class MoviePlayerPanel(tk.Frame):
     # ------------------------------------------------------------------
     # Combine strip — public entry point
     # ------------------------------------------------------------------
+    def _on_pending_split_delete(self, start_f: int, end_f: int):
+        """Called by MarkerBar._do_commit for each pending cut (in reverse order).
+        start_f / end_f are frame indices relative to the active clip (0-based).
+        Performs CombineStrip split+delete without writing any file.
+        """
+        if not (self.combine_strip and self.marker_bar):
+            return
+        cs  = self.combine_strip
+        act = cs.get_active_index()
+        if act is None:
+            return
+        clips = cs.get_clips()
+        if not clips or act >= len(clips):
+            return
+        ip        = clips[act].in_point
+        src_start = ip + start_f
+        src_end   = ip + end_f
+        # Split at deletion-zone start → head at act, rest at act+1
+        cs.split_clip(act, src_start)
+        # Split rest at deletion-zone end → delete-zone at act+1, tail at act+2
+        cs.split_clip(act + 1, src_end)
+        # Remove the deletion zone
+        cs.remove_clip(act + 1)
+        # Pin active back to head so next cut (in descending order) hits it
+        cs.set_active_index(act)
+
 
     def add_clip_to_strip(self, path: str, thumb_data=None):
         """Add a single clip. Delegates to add_clips_to_strip for ordering safety."""
@@ -2149,9 +2176,9 @@ class MoviePlayerPanel(tk.Frame):
     def _load_strip_edit_state(self, clip_idx: int):
         if not (self.combine_strip and self.marker_bar):
             return
-        # Don't clobber markers/cuts the user has already set on this clip
-        if self.marker_bar.get_markers() or self.marker_bar.edit_list.has_cuts:
-            return
+        # Always reset markers for the incoming clip — old clip state was already
+        # saved by _save_strip_edit_state before this is called.
+        self.marker_bar.reset_for_new_file()
         el = self.combine_strip.get_entry_edit_list(clip_idx)
         if el is not None:
             self.marker_bar.load_edit_list(el)
@@ -2616,28 +2643,36 @@ class MoviePlayerPanel(tk.Frame):
         h = max(2, c.winfo_height())
         c.delete("all")
         c.create_rectangle(0, 0, w, h, fill="#0a1a2a", outline="")
+        total_f = max(1, self._total_frames - 1)
         if self._total_frames > 0:
-            pct = max(0.0, min(1.0, self._frame_index / max(1, self._total_frames - 1)))
+            pct = max(0.0, min(1.0, self._frame_index / total_f))
             x = int(pct * (w - 1))
             if x > 0:
                 c.create_rectangle(0, 1, x, h - 1, fill="#1a5a8a", outline="")
             c.create_line(x, 0, x, h, fill="white", width=2)
-        # Draw marker lines (red) on top of progress bar
         if self.marker_bar:
-            total = max(1, self._total_frames - 1)
+            # Draw pending-deletion sections as red masks (drawn before markers
+            # so marker lines are visible on top)
+            for start_f, end_f in self.marker_bar.get_pending_cuts():
+                x1 = int(start_f / total_f * (w - 1))
+                x2 = int(end_f   / total_f * (w - 1))
+                c.create_rectangle(x1, 0, x2, h, fill="#cc0000", outline="", stipple="gray50")
+                c.create_rectangle(x1, 0, x2, h, fill="", outline="#ff4444")
+            # Draw marker lines (red) on top
             for mf in self.marker_bar.get_markers():
-                mx = int(mf / total * (w - 1))
+                mx = int(mf / total_f * (w - 1))
                 c.create_line(mx, 0, mx, h, fill="#ff3333", width=1)
 
     def _scrub_right_click(self, event):
-        """Right-click on scrub bar — show marker/cut context menu."""
+        """Right-click on scrub bar — toggle pending-deletion mark between markers."""
         if not self.marker_bar:
             return
         sc = self._scrub_canvas
         w = max(2, sc.winfo_width())
         total = max(1, self._total_frames - 1)
         frame = int(max(0, min(event.x, w - 1)) / (w - 1) * total)
-        self.marker_bar.show_context_menu_at_frame(frame, event.x_root, event.y_root)
+        self.marker_bar.toggle_pending_cut_at(frame)
+        self._scrub_redraw()
 
     def _scrub_press(self, event=None):
         if self._playing:

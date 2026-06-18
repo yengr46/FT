@@ -2305,13 +2305,15 @@ class FTView(tk.Tk):
                 cell = self.thumb_cells.get(idx)
                 labels = self.thumb_labels.get(idx, ())
                 img_lbl = labels[0] if labels else None
+                wm_w, wm_h = 74, 16
+                x, y = 8, 8
                 if img_lbl is not None:
-                    wm_w, wm_h = 74, 16
-                    x = img_lbl.winfo_x() + max(0, (img_lbl.winfo_width()  - wm_w) // 2)
-                    y = img_lbl.winfo_y() + max(0,  img_lbl.winfo_height() - wm_h - 4)
-                else:
-                    wm_w, wm_h = 74, 16
-                    x, y = 8, 8
+                    info = img_lbl.place_info()
+                    iw = int(info.get('width',  '') or 0)
+                    ih = int(info.get('height', '') or 0)
+                    if iw > 0 and ih > 0:
+                        x = int(info.get('x', '') or 0) + max(0, (iw - wm_w) // 2)
+                        y = int(info.get('y', '') or 0) + ih - wm_h - 4
                 lbl.place(x=x, y=y, width=wm_w, height=wm_h)
                 lbl.lift()
             else:

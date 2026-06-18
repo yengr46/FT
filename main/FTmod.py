@@ -4641,14 +4641,15 @@ class FileTagger(FTZoomMixin):
                            font=("Segoe UI", 18, "bold"),
                            tags="sel_watermark")
         elif selected and not ghost:
-            WM_H = 28
-            cv.create_rectangle(IX, IY + IMG_H // 2 - WM_H // 2,
-                                IX + sz, IY + IMG_H // 2 + WM_H // 2,
+            _sw, _sh = 74, 16
+            _sx = IX + max(0, (sz - _sw) // 2)
+            _sy = IY + IMG_H - _sh - 4
+            cv.create_rectangle(_sx, _sy, _sx + _sw, _sy + _sh,
                                 fill="#000000", stipple="gray50", outline="",
                                 tags="sel_watermark_bg")
-            cv.create_text(IX + sz // 2, IY + IMG_H // 2,
+            cv.create_text(_sx + _sw // 2, _sy + _sh // 2,
                            text="SELECTED", fill="white",
-                           font=("Segoe UI", 18, "bold"),
+                           font=("Segoe UI", 8, "bold"),
                            tags="sel_watermark")
 
         if ghost:
@@ -4917,11 +4918,14 @@ class FileTagger(FTZoomMixin):
                                         tags="del_watermark_bg")
                     cv.create_text(IX + sz//2, del_y, text="DELETING", fill="#ffdd00",
                                    font=("Segoe UI", 16, "bold"), tags="del_watermark")
-                    cv.create_rectangle(IX, sel_y - WM_H//2, IX+sz, sel_y + WM_H//2,
+                    _sw, _sh = 74, 16
+                    _sx = IX + max(0, (sz - _sw) // 2)
+                    _sy = IY + img_h - _sh - 4
+                    cv.create_rectangle(_sx, _sy, _sx + _sw, _sy + _sh,
                                         fill="#000000", stipple="gray50", outline="",
                                         tags="sel_watermark_bg")
-                    cv.create_text(IX + sz//2, sel_y, text="SELECTED", fill="white",
-                                   font=("Segoe UI", 16, "bold"), tags="sel_watermark")
+                    cv.create_text(_sx + _sw // 2, _sy + _sh // 2, text="SELECTED", fill="white",
+                                   font=("Segoe UI", 8, "bold"), tags="sel_watermark")
                 elif culled:
                     cv.create_rectangle(IX, mid_y - WM_H//2, IX+sz, mid_y + WM_H//2,
                                         fill="#000000", stipple="gray50", outline="",
@@ -4929,11 +4933,14 @@ class FileTagger(FTZoomMixin):
                     cv.create_text(IX + sz//2, mid_y, text="DELETING", fill="#ffdd00",
                                    font=("Segoe UI", 18, "bold"), tags="del_watermark")
                 else:
-                    cv.create_rectangle(IX, mid_y - WM_H//2, IX+sz, mid_y + WM_H//2,
+                    _sw, _sh = 74, 16
+                    _sx = IX + max(0, (sz - _sw) // 2)
+                    _sy = IY + img_h - _sh - 4
+                    cv.create_rectangle(_sx, _sy, _sx + _sw, _sy + _sh,
                                         fill="#000000", stipple="gray50", outline="",
                                         tags="sel_watermark_bg")
-                    cv.create_text(IX + sz//2, mid_y, text="SELECTED", fill="white",
-                                   font=("Segoe UI", 18, "bold"), tags="sel_watermark")
+                    cv.create_text(_sx + _sw // 2, _sy + _sh // 2, text="SELECTED", fill="white",
+                                   font=("Segoe UI", 8, "bold"), tags="sel_watermark")
         except Exception: pass
 
     def _cell_colours(self, orig):
@@ -6697,13 +6704,13 @@ class FileTagger(FTZoomMixin):
         tk.Label(dlg, text=f"🗑  Delete {len(candidates)} marked files?",
                  bg=BG3, fg=TAGGED_BD, font=("Segoe UI",13,"bold")).pack(pady=(16,6))
         tk.Label(dlg, text=f"{len(candidates)} files marked for deletion",
-                 bg=BG3, fg=TEXT_BRIGHT, font=("Segoe UI",10)).pack()
+                 bg=BG3, fg="white", font=("Segoe UI",10)).pack()
         if in_other:
             tk.Label(dlg, text=f"⚠  {len(in_other)} appear in other collections",
                      bg=BG3, fg=AMBER, font=("Segoe UI",10,"bold")).pack(pady=2)
         if missing:
             tk.Label(dlg, text=f"  {len(missing)} already missing from disk (will be removed from cull list only)",
-                     bg=BG3, fg=TEXT_DIM, font=("Segoe UI",9)).pack()
+                     bg=BG3, fg="#aaaaaa", font=("Segoe UI",9)).pack()
         tk.Frame(dlg, bg="#444", height=1).pack(fill="x", padx=20, pady=8)
 
         # No default — user must explicitly choose
@@ -6727,13 +6734,13 @@ class FileTagger(FTZoomMixin):
         for val, label, sublabel in options:
             fr = tk.Frame(dlg, bg=BG3); fr.pack(fill="x", padx=20, pady=3)
             tk.Radiobutton(fr, text=label, variable=action_var, value=val,
-                           bg=BG3, fg=TEXT_BRIGHT, selectcolor=BG2,
-                           activebackground=BG3, activeforeground=TEXT_BRIGHT,
+                           bg=BG3, fg="white", selectcolor=BG2,
+                           activebackground=BG3, activeforeground="white",
                            font=("Segoe UI",10,"bold"),
                            command=lambda: btn_confirm.config(state="normal")
                            ).pack(anchor="w")
             tk.Label(fr, text="    " + sublabel, bg=BG3,
-                     fg=AMBER if "NOT deleted" in sublabel else TEXT_DIM,
+                     fg=AMBER if "NOT deleted" in sublabel else "#aaaaaa",
                      font=("Segoe UI",8,"italic")).pack(anchor="w")
 
         tk.Frame(dlg, bg="#444", height=1).pack(fill="x", padx=20, pady=8)
@@ -7703,11 +7710,14 @@ class FileTagger(FTZoomMixin):
                             cv.create_text((x0+x1)//2, mid_y, text="MOVED", fill="white",
                                            font=("Segoe UI", 18, "bold"), tags="moved_watermark")
                         elif is_sel:
-                            cv.create_rectangle(x0, mid_y - WM_H//2, x1, mid_y + WM_H//2,
+                            _sw, _sh = 74, 16
+                            _sx = (x0 + x1) // 2 - _sw // 2
+                            _sy = y1 - _sh - 4
+                            cv.create_rectangle(_sx, _sy, _sx + _sw, _sy + _sh,
                                                 fill="#000000", stipple="gray50", outline="",
                                                 tags="sel_watermark_bg")
-                            cv.create_text((x0+x1)//2, mid_y, text="SELECTED", fill="white",
-                                           font=("Segoe UI", 18, "bold"), tags="sel_watermark")
+                            cv.create_text(_sx + _sw // 2, _sy + _sh // 2, text="SELECTED", fill="white",
+                                           font=("Segoe UI", 8, "bold"), tags="sel_watermark")
                 else:
                     is_sel  = orig in self._selected
                     is_cull = orig in self._culled
@@ -7731,11 +7741,14 @@ class FileTagger(FTZoomMixin):
                                             tags="del_watermark_bg")
                         cv.create_text(IX + SZ//2, del_y, text="DELETING", fill="#ffdd00",
                                        font=("Segoe UI", 16, "bold"), tags="del_watermark")
-                        cv.create_rectangle(IX, sel_y - WM_H//2, IX+SZ, sel_y + WM_H//2,
+                        _sw, _sh = 74, 16
+                        _sx = IX + max(0, (SZ - _sw) // 2)
+                        _sy = IY + img_h - _sh - 4
+                        cv.create_rectangle(_sx, _sy, _sx + _sw, _sy + _sh,
                                             fill="#000000", stipple="gray50", outline="",
                                             tags="sel_watermark_bg")
-                        cv.create_text(IX + SZ//2, sel_y, text="SELECTED", fill="white",
-                                       font=("Segoe UI", 16, "bold"), tags="sel_watermark")
+                        cv.create_text(_sx + _sw // 2, _sy + _sh // 2, text="SELECTED", fill="white",
+                                       font=("Segoe UI", 8, "bold"), tags="sel_watermark")
                     elif is_cull:
                         cv.create_rectangle(IX, mid_y - WM_H//2, IX+SZ, mid_y + WM_H//2,
                                             fill="#000000", stipple="gray50", outline="",
@@ -7743,11 +7756,14 @@ class FileTagger(FTZoomMixin):
                         cv.create_text(IX + SZ//2, mid_y, text="DELETING", fill="#ffdd00",
                                        font=("Segoe UI", 18, "bold"), tags="del_watermark")
                     elif is_sel:
-                        cv.create_rectangle(IX, mid_y - WM_H//2, IX+SZ, mid_y + WM_H//2,
+                        _sw, _sh = 74, 16
+                        _sx = IX + max(0, (SZ - _sw) // 2)
+                        _sy = IY + img_h - _sh - 4
+                        cv.create_rectangle(_sx, _sy, _sx + _sw, _sy + _sh,
                                             fill="#000000", stipple="gray50", outline="",
                                             tags="sel_watermark_bg")
-                        cv.create_text(IX + SZ//2, mid_y, text="SELECTED", fill="white",
-                                       font=("Segoe UI", 18, "bold"), tags="sel_watermark")
+                        cv.create_text(_sx + _sw // 2, _sy + _sh // 2, text="SELECTED", fill="white",
+                                       font=("Segoe UI", 8, "bold"), tags="sel_watermark")
             except Exception: pass
         self._update_sel_buttons()
     def _update_sel_buttons(self):
@@ -12955,31 +12971,47 @@ def _show_first_run_dialog(parent, on_complete_cb):
     tk.Frame(inner, bg="#444444", height=1).pack(fill="x", pady=(12, 0))
     lbl("Root folders  (optional — can be added later)", dim=True)
 
-    # Photos root
-    lbl("Photos root")
-    photos_var = tk.StringVar()
-    photos_n_var = tk.StringVar(value="Photos")
-    def _browse_photos():
-        d = _fd3.askdirectory(parent=dlg, title="Select Photos root folder")
-        if d:
-            photos_var.set(d)
-            photos_n_var.set(os.path.basename(d.rstrip('/\\')) or "Photos")
-    entry_row(photos_var, _browse_photos)
-    lbl("Photos display name", dim=True)
-    entry_row(photos_n_var)
+    # Dynamic roots list
+    roots_frame = tk.Frame(inner, bg=BG3); roots_frame.pack(fill="x", pady=(4, 0))
+    root_rows = []  # list of (path_var, label_var, row_frame)
 
-    # Documents root
-    lbl("Documents root")
-    pdfs_var = tk.StringVar()
-    pdfs_n_var = tk.StringVar(value="Documents")
-    def _browse_pdfs():
-        d = _fd3.askdirectory(parent=dlg, title="Select Documents root folder")
-        if d:
-            pdfs_var.set(d)
-            pdfs_n_var.set(os.path.basename(d.rstrip('/\\')) or "Documents")
-    entry_row(pdfs_var, _browse_pdfs)
-    lbl("Documents display name", dim=True)
-    entry_row(pdfs_n_var)
+    def _add_root_row(path="", label=""):
+        row_f = tk.Frame(roots_frame, bg=BG3); row_f.pack(fill="x", pady=2)
+        pv = tk.StringVar(value=path)
+        lv = tk.StringVar(value=label)
+        pe = tk.Entry(row_f, textvariable=pv, bg=BG2, fg=TEXT_BRIGHT,
+                      insertbackground=TEXT_BRIGHT, font=("Segoe UI", 9),
+                      relief="flat", highlightthickness=1, highlightbackground="#555")
+        pe.pack(side="left", fill="x", expand=True)
+        def _browse(pv=pv, lv=lv):
+            d = _fd3.askdirectory(parent=dlg, title="Select root folder")
+            if d:
+                pv.set(d)
+                if not lv.get().strip():
+                    lv.set(os.path.basename(d.rstrip("/\\")) or "Root")
+        tk.Button(row_f, text="…", bg=BG2, fg=TEXT_BRIGHT, font=("Segoe UI", 8),
+                  relief="flat", padx=4, cursor="hand2",
+                  command=_browse).pack(side="left", padx=(2, 0))
+        le = tk.Entry(row_f, textvariable=lv, bg=BG2, fg=TEXT_BRIGHT,
+                      insertbackground=TEXT_BRIGHT, font=("Segoe UI", 9),
+                      relief="flat", highlightthickness=1, highlightbackground="#555",
+                      width=12)
+        le.pack(side="left", padx=(4, 0))
+        def _remove(row_f=row_f, item=None):
+            row_f.destroy()
+            if item in root_rows: root_rows.remove(item)
+        item = [pv, lv, row_f, None]
+        item[3] = tk.Button(row_f, text="✕", bg=BG3, fg="#aa4444",
+                            font=("Segoe UI", 9), relief="flat", padx=4, cursor="hand2",
+                            command=lambda: _remove(row_f, item))
+        item[3].pack(side="left", padx=(2, 0))
+        root_rows.append(item)
+
+    tk.Button(inner, text="+ Add root folder", bg=BG2, fg=TEXT_BRIGHT,
+              font=("Segoe UI", 8), relief="flat", padx=8, pady=2,
+              cursor="hand2", command=_add_root_row).pack(anchor="w", pady=(4, 0))
+    tk.Label(inner, text="Path                                          Label",
+             bg=BG3, fg=TEXT_DIM, font=("Segoe UI", 7)).pack(anchor="w")
 
     # Thumbnail size
     tk.Frame(inner, bg="#444444", height=1).pack(fill="x", pady=(12, 0))
@@ -13005,19 +13037,14 @@ def _show_first_run_dialog(parent, on_complete_cb):
         if not loc or not os.path.isdir(loc):
             err_lbl.config(text="Please choose a valid location folder."); return
 
-        photos_roots = []
-        if photos_var.get().strip():
-            photos_roots = [(photos_var.get().strip(),
-                             photos_n_var.get().strip() or "Photos")]
-        pdfs_roots = []
-        if pdfs_var.get().strip():
-            pdfs_roots = [(pdfs_var.get().strip(),
-                           pdfs_n_var.get().strip() or "Documents")]
+        roots = []
+        for pv, lv, *_ in root_rows:
+            p = pv.get().strip()
+            if p:
+                roots.append((p, lv.get().strip() or os.path.basename(p.rstrip("/\\")) or "Root"))
 
-        # Create project folder structure
-        proj = _create_project(name, loc, photos_roots, pdfs_roots)
+        proj = _create_project(name, loc, roots=roots)
 
-        # Write FileTagger.ini
         ini_path = os.path.join(script_dir, "FileTagger.ini")
         thumb_size = sz_var.get().strip() or "250"
         ini_content = (
@@ -13297,14 +13324,8 @@ def _show_new_project_dialog(parent, on_create_cb):
     tk.Label(dlg, text="Create New Project", bg=BG3, fg=TEXT_BRIGHT,
              font=("Segoe UI", 12, "bold")).pack(pady=(16, 8))
 
-    name_var    = tk.StringVar()
-    loc_var     = tk.StringVar(value=os.path.dirname(os.path.abspath(__file__)))
-    photos_var  = tk.StringVar()
-    photos_n_var= tk.StringVar(value="Photos")
-    pdfs_var    = tk.StringVar()
-    pdfs_n_var  = tk.StringVar(value="PDFs")
-    videos_var  = tk.StringVar()
-    videos_n_var= tk.StringVar(value="Videos")
+    name_var = tk.StringVar()
+    loc_var  = tk.StringVar(value=os.path.dirname(os.path.abspath(__file__)))
 
     row("Project name:", name_var)
 
@@ -13312,26 +13333,7 @@ def _show_new_project_dialog(parent, on_create_cb):
     def _browse_loc():
         d = _fd2.askdirectory(parent=dlg, title="Where to create the FTProj_ folder")
         if d: loc_var.set(d)
-    def _browse_photos():
-        d = _fd2.askdirectory(parent=dlg, title="Photos root folder")
-        if d: photos_var.set(d); photos_n_var.set(os.path.basename(d.rstrip('/\\')) or "Photos")
-    def _browse_pdfs():
-        d = _fd2.askdirectory(parent=dlg, title="Documents root folder")
-        if d: pdfs_var.set(d); pdfs_n_var.set(os.path.basename(d.rstrip('/\\')) or "Documents")
-    def _browse_videos():
-        d = _fd2.askdirectory(parent=dlg, title="Videos root folder")
-        if d: videos_var.set(d); videos_n_var.set(os.path.basename(d.rstrip('/\\')) or "Videos")
-
     row("Create in folder:", loc_var, _browse_loc)
-
-    tk.Label(dlg, text="Roots (optional — can be added later):",
-             bg=BG3, fg=TEXT_DIM, font=("Segoe UI", 8)).pack(anchor="w", padx=16, pady=(8,0))
-    row("Photos root:", photos_var, _browse_photos)
-    row("Photos name:", photos_n_var)
-    row("Documents root:",   pdfs_var,   _browse_pdfs)
-    row("Documents name:",   pdfs_n_var)
-    row("Videos root:",   videos_var,   _browse_videos)
-    row("Videos name:",   videos_n_var)
 
     lbl_preview = tk.Label(dlg, text="", bg=BG3, fg="#888888",
                            font=("Segoe UI", 8), wraplength=440)
@@ -13347,6 +13349,51 @@ def _show_new_project_dialog(parent, on_create_cb):
     name_var.trace_add("write", _update_preview)
     loc_var.trace_add("write", _update_preview)
 
+    # Dynamic roots list
+    tk.Label(dlg, text="Root folders (optional — can be added later):",
+             bg=BG3, fg=TEXT_DIM, font=("Segoe UI", 8)).pack(anchor="w", padx=16, pady=(10,0))
+    tk.Label(dlg, text="  Path                                                Label",
+             bg=BG3, fg=TEXT_DIM, font=("Segoe UI", 7)).pack(anchor="w", padx=16)
+
+    roots_outer = tk.Frame(dlg, bg=BG3); roots_outer.pack(fill="x", padx=16)
+    root_rows = []  # list of [path_var, label_var, row_frame, remove_btn]
+
+    def _add_root_row(path="", label=""):
+        row_f = tk.Frame(roots_outer, bg=BG3); row_f.pack(fill="x", pady=2)
+        pv = tk.StringVar(value=path)
+        lv = tk.StringVar(value=label)
+        pe = tk.Entry(row_f, textvariable=pv, bg=BG2, fg=TEXT_BRIGHT,
+                      insertbackground=TEXT_BRIGHT, font=("Segoe UI", 9),
+                      relief="flat", highlightthickness=1, highlightbackground="#555")
+        pe.pack(side="left", fill="x", expand=True)
+        def _browse(pv=pv, lv=lv):
+            d = _fd2.askdirectory(parent=dlg, title="Select root folder")
+            if d:
+                pv.set(d)
+                if not lv.get().strip():
+                    lv.set(os.path.basename(d.rstrip("/\\")) or "Root")
+        tk.Button(row_f, text="…", bg=BG2, fg=TEXT_BRIGHT, font=("Segoe UI", 8),
+                  relief="flat", padx=4, cursor="hand2",
+                  command=_browse).pack(side="left", padx=(2,0))
+        le = tk.Entry(row_f, textvariable=lv, bg=BG2, fg=TEXT_BRIGHT,
+                      insertbackground=TEXT_BRIGHT, font=("Segoe UI", 9),
+                      relief="flat", highlightthickness=1, highlightbackground="#555",
+                      width=12)
+        le.pack(side="left", padx=(4,0))
+        item = [pv, lv, row_f, None]
+        def _remove(row_f=row_f, item=item):
+            row_f.destroy()
+            if item in root_rows: root_rows.remove(item)
+        item[3] = tk.Button(row_f, text="✕", bg=BG3, fg="#aa4444",
+                            font=("Segoe UI", 9), relief="flat", padx=4, cursor="hand2",
+                            command=_remove)
+        item[3].pack(side="left", padx=(2,0))
+        root_rows.append(item)
+
+    tk.Button(dlg, text="+ Add root folder", bg=BG2, fg=TEXT_BRIGHT,
+              font=("Segoe UI", 8), relief="flat", padx=8, pady=2,
+              cursor="hand2", command=_add_root_row).pack(anchor="w", padx=16, pady=(4,0))
+
     def _create():
         name = name_var.get().strip()
         loc  = loc_var.get().strip()
@@ -13354,10 +13401,12 @@ def _show_new_project_dialog(parent, on_create_cb):
             messagebox.showerror("Name required", "Please enter a project name.", parent=dlg); return
         if not loc or not os.path.isdir(loc):
             messagebox.showerror("Invalid location", "Please choose a valid folder.", parent=dlg); return
-        photos_roots = [(photos_var.get().strip(), photos_n_var.get().strip())] if photos_var.get().strip() else []
-        pdfs_roots   = [(pdfs_var.get().strip(),   pdfs_n_var.get().strip())]   if pdfs_var.get().strip()   else []
-        videos_roots = [(videos_var.get().strip(), videos_n_var.get().strip())] if videos_var.get().strip() else []
-        proj = _create_project(name, loc, photos_roots, pdfs_roots, videos_roots)
+        roots = []
+        for pv, lv, *_ in root_rows:
+            p = pv.get().strip()
+            if p:
+                roots.append((p, lv.get().strip() or os.path.basename(p.rstrip("/\\")) or "Root"))
+        proj = _create_project(name, loc, roots=roots)
         messagebox.showinfo("Created",
             f"Project '{name}' created at:\n{proj['path']}", parent=dlg)
         dlg.destroy()
@@ -13484,64 +13533,56 @@ def _settings_dialog(parent_win, on_save_cb=None, startup=False):
     tk.Label(inner, text="Change to switch working context (thumbnails, collections, cull list).",
              bg=BG3, fg=TEXT_DIM, font=("Segoe UI",8)).pack(anchor="w", padx=4)
 
-    # ── Photos roots ──────────────────────────────────────────────────────────
-    section("📷  Photos Roots  (one per line:  path : Display Name)")
-    photo_roots_var = tk.StringVar(value="\n".join(
-        f"{p} : {n}" for p, n in PHOTOS_ROOTS) if PHOTOS_ROOTS else "")
-    ph_frame = tk.Frame(inner, bg=BG3); ph_frame.pack(fill="x", pady=3)
-    ph_text = tk.Text(ph_frame, height=4, bg=BG2, fg=TEXT_BRIGHT,
+    # ── Root folders (unified) ────────────────────────────────────────────────
+    section("📁  Root Folders")
+    tk.Label(inner, text="  Path                                                         Label",
+             bg=BG3, fg=TEXT_DIM, font=("Segoe UI",7)).pack(anchor="w", padx=4)
+
+    roots_list_frame = tk.Frame(inner, bg=BG3); roots_list_frame.pack(fill="x", pady=3)
+    settings_root_rows = []  # [path_var, label_var, row_frame, remove_btn]
+
+    def _add_settings_root_row(path="", label=""):
+        row_f = tk.Frame(roots_list_frame, bg=BG3); row_f.pack(fill="x", pady=2)
+        pv = tk.StringVar(value=path)
+        lv = tk.StringVar(value=label)
+        pe = tk.Entry(row_f, textvariable=pv, bg=BG2, fg=TEXT_BRIGHT,
                       insertbackground=TEXT_BRIGHT, relief="flat",
                       highlightthickness=1, highlightbackground=HOVER_BD,
-                      font=("Segoe UI",9), wrap="none")
-    ph_text.insert("1.0", photo_roots_var.get())
-    ph_text.pack(side="left", fill="x", expand=True, padx=(0,4))
-    def _browse_photo():
-        p = fd.askdirectory(title="Add Photos root folder", parent=dlg,
-                            initialdir=os.path.expanduser("~"))
-        if p:
-            name = os.path.basename(os.path.normpath(p))
-            cur = ph_text.get("1.0","end").strip()
-            ph_text.insert("end", ("\n" if cur else "") + f"{os.path.normpath(p)} : {name}")
-    tk.Button(ph_frame, text="Add…", bg=BG2, fg=TEXT_BRIGHT, font=("Segoe UI",8),
-              relief="flat", padx=6, cursor="hand2", command=_browse_photo).pack(side="left", anchor="n")
+                      font=("Segoe UI",9))
+        pe.pack(side="left", fill="x", expand=True)
+        def _browse_root(pv=pv, lv=lv):
+            cur = pv.get().strip()
+            init = cur if os.path.isdir(cur) else os.path.expanduser("~")
+            p = fd.askdirectory(title="Select root folder", initialdir=init, parent=dlg)
+            if p:
+                pv.set(os.path.normpath(p))
+                if not lv.get().strip():
+                    lv.set(os.path.basename(os.path.normpath(p)) or "Root")
+        tk.Button(row_f, text="…", bg=BG2, fg=TEXT_BRIGHT, font=("Segoe UI",8),
+                  relief="flat", padx=4, cursor="hand2",
+                  command=_browse_root).pack(side="left", padx=(2,0))
+        le = tk.Entry(row_f, textvariable=lv, bg=BG2, fg=TEXT_BRIGHT,
+                      insertbackground=TEXT_BRIGHT, relief="flat",
+                      highlightthickness=1, highlightbackground=HOVER_BD,
+                      font=("Segoe UI",9), width=14)
+        le.pack(side="left", padx=(4,0))
+        item = [pv, lv, row_f, None]
+        def _remove_root(row_f=row_f, item=item):
+            row_f.destroy()
+            if item in settings_root_rows: settings_root_rows.remove(item)
+        item[3] = tk.Button(row_f, text="✕", bg=BG3, fg="#aa4444",
+                            font=("Segoe UI",9), relief="flat", padx=4, cursor="hand2",
+                            command=_remove_root)
+        item[3].pack(side="left", padx=(2,0))
+        settings_root_rows.append(item)
 
-    # ── PDFs roots ────────────────────────────────────────────────────────────
-    section("📄  Documents Roots  (one per line:  path : Display Name)")
-    pdf_frame = tk.Frame(inner, bg=BG3); pdf_frame.pack(fill="x", pady=3)
-    pdf_text = tk.Text(pdf_frame, height=4, bg=BG2, fg=TEXT_BRIGHT,
-                       insertbackground=TEXT_BRIGHT, relief="flat",
-                       highlightthickness=1, highlightbackground=HOVER_BD,
-                       font=("Segoe UI",9), wrap="none")
-    pdf_text.insert("1.0", "\n".join(f"{p} : {n}" for p, n in PDFS_ROOTS) if PDFS_ROOTS else "")
-    pdf_text.pack(side="left", fill="x", expand=True, padx=(0,4))
-    def _browse_pdf():
-        p = fd.askdirectory(title="Add Documents root folder", parent=dlg,
-                            initialdir=os.path.expanduser("~"))
-        if p:
-            name = os.path.basename(os.path.normpath(p))
-            cur = pdf_text.get("1.0","end").strip()
-            pdf_text.insert("end", ("\n" if cur else "") + f"{os.path.normpath(p)} : {name}")
-    tk.Button(pdf_frame, text="Add…", bg=BG2, fg=TEXT_BRIGHT, font=("Segoe UI",8),
-              relief="flat", padx=6, cursor="hand2", command=_browse_pdf).pack(side="left", anchor="n")
+    # Populate from current ROOTS global
+    for root_path, root_label in ROOTS:
+        _add_settings_root_row(root_path, root_label)
 
-    # ── Videos roots ─────────────────────────────────────────────────────────
-    section("🎬  Videos Roots  (one per line:  path : Display Name)")
-    vid_frame = tk.Frame(inner, bg=BG3); vid_frame.pack(fill="x", pady=3)
-    vid_text = tk.Text(vid_frame, height=4, bg=BG2, fg=TEXT_BRIGHT,
-                       insertbackground=TEXT_BRIGHT, relief="flat",
-                       highlightthickness=1, highlightbackground=HOVER_BD,
-                       font=("Segoe UI",9), wrap="none")
-    vid_text.insert("1.0", "\n".join(f"{p} : {n}" for p, n in VIDEOS_ROOTS) if VIDEOS_ROOTS else "")
-    vid_text.pack(side="left", fill="x", expand=True, padx=(0,4))
-    def _browse_vid():
-        p = fd.askdirectory(title="Add Videos root folder", parent=dlg,
-                            initialdir=os.path.expanduser("~"))
-        if p:
-            name = os.path.basename(os.path.normpath(p))
-            cur = vid_text.get("1.0","end").strip()
-            vid_text.insert("end", ("\n" if cur else "") + f"{os.path.normpath(p)} : {name}")
-    tk.Button(vid_frame, text="Add…", bg=BG2, fg=TEXT_BRIGHT, font=("Segoe UI",8),
-              relief="flat", padx=6, cursor="hand2", command=_browse_vid).pack(side="left", anchor="n")
+    tk.Button(inner, text="+ Add root folder", bg=BG2, fg=TEXT_BRIGHT,
+              font=("Segoe UI",8), relief="flat", padx=8, pady=2,
+              cursor="hand2", command=_add_settings_root_row).pack(anchor="w", pady=(2,4))
 
     # ── MGEN executable ───────────────────────────────────────────────────────
     section("⚙  MGEN Executable  (optional)")
@@ -13582,25 +13623,15 @@ def _settings_dialog(parent_win, on_save_cb=None, startup=False):
     bf = tk.Frame(dlg, bg=BG3); bf.pack(pady=12)
 
     def on_save():
-        global PHOTOS_ROOT, PDFS_ROOT, VIDEOS_ROOT, PHOTOS_ROOTS, PDFS_ROOTS, VIDEOS_ROOTS
+        global ROOTS, PHOTOS_ROOT, PDFS_ROOT, VIDEOS_ROOT, PHOTOS_ROOTS, PDFS_ROOTS, VIDEOS_ROOTS
         global THUMB_SIZE, PROC_TEMP_FOLDER, PROC_MGEN_EXE
 
-        # Parse roots from text widgets
-        new_photo_roots = _parse_roots_from_text(ph_text.get("1.0","end"))
-        new_pdf_roots   = _parse_roots_from_text(pdf_text.get("1.0","end"))
-        new_vid_roots   = _parse_roots_from_text(vid_text.get("1.0","end"))
-
-        if not new_photo_roots and not new_pdf_roots:
-            tk.messagebox.showwarning("No roots set",
-                "Please set at least one Photos or Documents root folder.", parent=dlg)
-            return
-
-        PHOTOS_ROOTS = new_photo_roots
-        PDFS_ROOTS   = new_pdf_roots
-        VIDEOS_ROOTS = new_vid_roots
-        PHOTOS_ROOT  = PHOTOS_ROOTS[0][0] if PHOTOS_ROOTS else ""
-        PDFS_ROOT    = PDFS_ROOTS[0][0]   if PDFS_ROOTS   else ""
-        VIDEOS_ROOT  = VIDEOS_ROOTS[0][0] if VIDEOS_ROOTS else ""
+        # Collect roots from dynamic list
+        new_roots = []
+        for pv, lv, *_ in settings_root_rows:
+            p = pv.get().strip()
+            if p:
+                new_roots.append((p, lv.get().strip() or os.path.basename(p.rstrip("/\\")) or "Root"))
 
         new_theme = theme_var.get()
         try: THUMB_SIZE = max(100, min(500, int(sz_var.get())))
@@ -13608,26 +13639,20 @@ def _settings_dialog(parent_win, on_save_cb=None, startup=False):
         PROC_TEMP_FOLDER = temp_var.get().strip()
         PROC_MGEN_EXE    = mgen_var.get().strip()
 
-        # Write ini
+        # Update globals
+        ROOTS        = new_roots
+        PHOTOS_ROOTS = new_roots   # compat shims
+        PDFS_ROOTS   = []
+        VIDEOS_ROOTS = []
+        PHOTOS_ROOT  = new_roots[0][0] if new_roots else ""
+        PDFS_ROOT    = ""
+        VIDEOS_ROOT  = ""
+
         ini = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "FileTagger.ini")
         try:
-            lines = []
-            if PHOTOS_ROOTS:
-                lines.append("[photos]")
-                for p, n in PHOTOS_ROOTS:
-                    lines.append(f"root = {p} : {n}")
-                lines.append("")
-            if PDFS_ROOTS:
-                lines.append("[pdfs]")
-                for p, n in PDFS_ROOTS:
-                    lines.append(f"root = {p} : {n}")
-                lines.append("")
-            if VIDEOS_ROOTS:
-                lines.append("[videos]")
-                for p, n in VIDEOS_ROOTS:
-                    lines.append(f"root = {p} : {n}")
-                lines.append("")
-            lines += [
+            new_db_path = db_var.get().strip() or _db_default_path()
+            active_name = _active_project_name_runtime()
+            lines = [
                 "[display]",
                 f"thumb_size = {THUMB_SIZE}",
                 f"theme      = {new_theme}",
@@ -13638,39 +13663,20 @@ def _settings_dialog(parent_win, on_save_cb=None, startup=False):
                 if PROC_TEMP_FOLDER: lines.append(f"temp_folder = {PROC_TEMP_FOLDER}")
                 if PROC_MGEN_EXE:   lines.append(f"mgen_exe    = {PROC_MGEN_EXE}")
                 lines.append("")
-            new_db_path = db_var.get().strip() or _db_default_path()
-            active_name = _active_project_name_runtime()
-            lines.append("[FileTagger]")
+            lines += ["[FileTagger]"]
             if active_name:
-                # Preserve the selected project.  Without this, the app can load
-                # the edited roots once, then the project selector re-activates
-                # the old project and replaces Documents with the default root.
                 lines.append(f"active_project = {active_name}")
             lines.append(f"database = {new_db_path}")
             lines.append("")
             with open(ini, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines))
 
-            # If a named project is active, FileTagger.ini only points to that
-            # project; roots are loaded from Projects.ini on the next run.  Keep
-            # the project record in sync too, otherwise Add Root appears to save
-            # but vanishes after restart.
+            # Save roots to Projects.ini via active project
             try:
                 if active_name:
                     projects = _load_projects()
                     if active_name in projects:
-                        # ft_projects uses a flat "roots" list — combine all
-                        # three typed widgets into one deduped list.
-                        seen = set(); combined = []
-                        for item in PHOTOS_ROOTS + PDFS_ROOTS + VIDEOS_ROOTS:
-                            key = item[0].lower()
-                            if key not in seen:
-                                seen.add(key)
-                                combined.append(item)
-                        projects[active_name]["roots"] = combined
-                        # Keep the project folder stable.  The project DB path is
-                        # derived from the project path, so do not rewrite the
-                        # project path to an arbitrary database folder here.
+                        projects[active_name]["roots"] = new_roots
                         _save_projects(projects)
                         try:
                             _ACTIVE_PROJECT.update(projects[active_name])

@@ -290,6 +290,7 @@ class MarkerBar(tk.Frame):
                  seek_to:    Callable,
                  on_commit:  Callable,
                  on_markers_changed: Callable = None,
+                 on_split_delete:    Callable = None,
                  bg=SCRUB_BG):
         super().__init__(parent, bg=bg)
         self._get_frame = get_frame
@@ -299,11 +300,13 @@ class MarkerBar(tk.Frame):
         self._seek_to   = seek_to
         self._on_commit = on_commit
         self._on_markers_changed = on_markers_changed
+        self._on_split_delete = on_split_delete
 
         self.edit_list   = EditList()
         self._markers:   List[int]            = []
         self._sel:       Optional[Tuple[int,int]] = None
         self._sel_anchor: Optional[int]       = None
+        self._pending_cuts: List[Tuple[int,int]] = []
 
         self._build_ui()
 
@@ -426,6 +429,7 @@ class MarkerBar(tk.Frame):
         self._markers.clear()
         self._sel = None
         self._sel_anchor = None
+        self._pending_cuts = []
         self.edit_list.clear()
         self._update_status()
         self.redraw()
@@ -437,6 +441,32 @@ class MarkerBar(tk.Frame):
     def get_markers(self) -> list:
         """Return a copy of the current marker frame list."""
         return list(self._markers)
+
+    def get_pending_cuts(self) -> list:
+        """Return list of (start_frame, end_frame) pending-deletion regions."""
+        return list(self._pending_cuts)
+
+    def toggle_pending_cut_at(self, frame: int):
+        """Right-click handler: mark/unmark the section between the two markers
+        surrounding *frame* as a pending deletion."""
+        # Check if inside an existing pending cut — toggle it off
+        for i, (s, e) in enumerate(self._pending_cuts):
+            if s <= frame <= e:
+                self._pending_cuts.pop(i)
+                self._update_status()
+                if self._on_markers_changed:
+                    self._on_markers_changed(list(self._markers))
+                return
+        # Find surrounding markers
+        left  = max((m for m in self._markers if m <= frame), default=None)
+        right = min((m for m in self._markers if m >  frame), default=None)
+        if left is None or right is None:
+            return  # no markers bracketing this position
+        self._pending_cuts.append((left, right))
+        self._pending_cuts.sort()
+        self._update_status()
+        if self._on_markers_changed:
+            self._on_markers_changed(list(self._markers))
 
     def load_edit_list(self, edit_list: "EditList"):
         """Load a saved EditList into this MarkerBar (e.g. when switching strip clips)."""
@@ -710,76 +740,42 @@ class MarkerBar(tk.Frame):
         self.redraw()
 
     def _do_commit(self):
-        path = self._get_path()
-        if path:
-            path = os.path.abspath(path)
-        if not path:
-            messagebox.showinfo("Commit", "No video loaded.", parent=self)
-            return
-        if not self.edit_list.has_cuts:
-            messagebox.showinfo("Commit", "No cuts to commit.", parent=self)
-            return
-        if not shutil.which("ffmpeg"):
-            messagebox.showerror("Commit",
-                "ffmpeg not found on PATH.\nDownload from https://ffmpeg.org",
+        """Apply pending-deletion sections to the timeline via split+delete.
+
+        Each pending cut calls on_split_delete(start_frame, end_frame) which
+        wires to CombineStrip split+delete.  No file is written — the original
+        file is unchanged until the user clicks Save/Export.
+        """
+        if not self._pending_cuts:
+            messagebox.showinfo("Commit",
+                "No sections marked for deletion.\n\n"
+                "Right-click the scrub bar between two markers to mark a section.",
                 parent=self)
             return
 
-        total    = self._get_total()
-        fps      = self._get_fps() or 25.0
-        overwrite = self._save_mode.get() == "overwrite"
-        precise   = self._cut_mode.get()  == "precise"
-        segments  = self.edit_list.kept_segments(total)
-        out_preview = _output_path(path, overwrite)
-
-        cuts = self.edit_list.cuts
+        fps = self._get_fps() or 25.0
         cut_summary = "\n".join(
-            f"  Cut {i+1}: frames {c.start}–{c.end} ({c.duration(fps):.1f}s)"
-            for i, c in enumerate(cuts)
+            f"  frames {s}\u2013{e}  ({(e-s)/fps:.1f}s)"
+            for s, e in self._pending_cuts
         )
         if not messagebox.askyesno(
-            "Commit Edits",
-            f"{len(cuts)} cut{'s' if len(cuts)!=1 else ''} to apply:\n\n"
+            "Commit deletions",
+            f"{len(self._pending_cuts)} section(s) to remove from timeline:\n\n"
             f"{cut_summary}\n\n"
-            f"Source:\n{path}\n\n"
-            f"Save as:\n{out_preview}\n\n"
-            f"{'Overwrite original' if overwrite else 'New file'}?",
+            "The original file is NOT modified.\n"
+            "Use Save/Export to write the result to disk.",
             parent=self):
             return
 
-        self.lbl_status.configure(text="Committing… please wait")
-        self.update_idletasks()
+        if self._on_split_delete:
+            for start_f, end_f in sorted(self._pending_cuts, reverse=True):
+                self._on_split_delete(start_f, end_f)
 
-        def _work(p=path, segs=segments, f=fps, ow=overwrite, pr=precise):
-            try:
-                out = commit_edits(p, segs, f, total, ow, pr)
-                def _done(o=out):
-                    self.lbl_status.configure(
-                        text=f"✔ Saved: {os.path.basename(o)}")
-                    self.edit_list.clear()
-                    self._markers.clear()
-                    self._sel = None
-                    self.redraw()
-                    self._on_commit(o)
-                    # Show the full path and offer to reveal in Explorer
-                    if messagebox.askyesno(
-                            "Commit complete",
-                            f"Saved to:\n{o}\n\nOpen containing folder?",
-                            parent=self):
-                        try:
-                            subprocess.Popen(
-                                ["explorer", "/select,", os.path.normpath(o)])
-                        except Exception:
-                            pass
-                self.after(0, _done)
-            except Exception as ex:
-                err = str(ex)
-                self.after(0, lambda e=err: (
-                    messagebox.showerror("Commit failed", e, parent=self),
-                    self.lbl_status.configure(text="Commit failed")
-                  ))
-
-        threading.Thread(target=_work, daemon=True).start()
+        self._pending_cuts = []
+        self._update_status()
+        self.redraw()
+        if self._on_markers_changed:
+            self._on_markers_changed(list(self._markers))
 
     # ------------------------------------------------------------------
     # Status
@@ -798,10 +794,15 @@ class MarkerBar(tk.Frame):
             self.lbl_status.configure(
                 text=f"{n} markers — right-click between two markers to cut that section")
 
-        if nc > 0:
+        np = len(self._pending_cuts)
+        if np > 0:
+            total_del = sum((e - s) for s, e in self._pending_cuts) / fps
+            self.lbl_cuts.configure(
+                text=f"{np} section(s) marked for deletion ({total_del:.1f}s) — click ✔ Commit to apply")
+        elif nc > 0:
             total_cut = sum(c.duration(fps) for c in self.edit_list.cuts)
             self.lbl_cuts.configure(
-                text=f"{nc} cut{'s' if nc!=1 else ''} pending ({total_cut:.1f}s removed) — click ✔ Commit to save")
+                text=f"{nc} cut{'s' if nc!=1 else ''} in edit list ({total_cut:.1f}s removed)")
         else:
             self.lbl_cuts.configure(text="")
 

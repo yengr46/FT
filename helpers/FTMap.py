@@ -341,12 +341,12 @@ class FTMap(tk.Tk):
 
             # File list inside left_paned
             file_frame = tk.Frame(left_paned, bg=BG2)
-            left_paned.add(file_frame, minsize=FTMAP_FILE_LIST_W, width=FTMAP_FILE_LIST_W, stretch="never")
+            left_paned.add(file_frame, minsize=FTMAP_FILE_LIST_W, width=FTMAP_FILE_LIST_W, stretch="always")
 
         else:
             # Embedded: just a file list pane, no tree or folder browser
             left_outer = tk.Frame(self._paned, bg=BG2, width=300)
-            self._paned.add(left_outer, minsize=200, width=300, stretch="never")
+            self._paned.add(left_outer, minsize=200, width=300, stretch="always")
             self._folder_var   = None
             self._folder_count = None
             self._tree         = None

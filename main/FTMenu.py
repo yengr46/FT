@@ -71,6 +71,9 @@ def _default_ini_text() -> str:
         "4 = helpers/FTCompare.py | Compare Folders\n"
         "5 = helpers/FTFiler.py | Organisation and Renaming\n"
         "6 = helpers/FTMap.py | Display on Map\n"
+        "\n"
+        "[Video]\n"
+        "7 = helpers/FTVideo.py | Video Browser and Editor\n"
     )
 
 
@@ -203,6 +206,7 @@ class FTMenu(tk.Tk):
                 os.path.join("helpers", "FTCompare.py"),
                 os.path.join("helpers", "FTFiler.py"),
                 os.path.join("helpers", "FTMap.py"),
+                os.path.join("helpers", "FTVideo.py"),
             )
             home_has_any = any(os.path.isfile(os.path.join(self.home_folder, app)) for app in known_apps)
             root_has_any = any(os.path.isfile(os.path.join(root_folder, app)) for app in known_apps)

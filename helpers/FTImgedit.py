@@ -327,9 +327,11 @@ class FTImgedit(tk.Tk):
         self._work_canvas = tk.Canvas(work_frame, bg=CANVAS_BG, highlightthickness=0)
         self._work_canvas.pack(fill="both", expand=True)
         self._work_canvas.bind("<Configure>", lambda e: self._redraw_working())
-        self._work_canvas.bind("<ButtonPress-1>",   self._on_press)
-        self._work_canvas.bind("<B1-Motion>",       self._on_drag)
-        self._work_canvas.bind("<ButtonRelease-1>", self._on_release)
+        self._work_canvas.bind("<ButtonPress-1>",        self._on_press)
+        self._work_canvas.bind("<Shift-ButtonPress-1>",  self._on_shift_press)
+        self._work_canvas.bind("<B1-Motion>",            self._on_drag)
+        self._work_canvas.bind("<ButtonRelease-1>",      self._on_release)
+        self._work_canvas.bind("<Motion>",               self._on_motion)
 
         # _overlay is an alias for _work_canvas — handles/grid drawn on same canvas
         self._overlay  = self._work_canvas
@@ -823,6 +825,7 @@ class FTImgedit(tk.Tk):
         self._fft_click_bound = [False]
         self._fft_preview_img = [None]
         self._fft_preview_mode = False
+        self._fft_line_anchor = None   # (sx, sy) awaiting shift-click line end
 
         return f
 
@@ -2265,6 +2268,7 @@ class FTImgedit(tk.Tk):
         self._fft_disp        = {"sz": 300, "ox": 0, "oy": 0}
         self._fft_preview_img = [None]
         self._fft_preview_mode = False
+        self._fft_line_anchor = None
         if hasattr(self, '_fft_mode_var'):
             try: self._fft_mode_var.set("Add")
             except Exception: pass
@@ -2321,12 +2325,14 @@ class FTImgedit(tk.Tk):
                 photo = ImageTk.PhotoImage(spec_pil)
                 self._fft_spec_photo[0] = photo
                 self._fft_disp.update(sz=sz, ox=ox, oy=oy)
-                oc.delete("overlay")
-                oc.create_image(ox, oy, anchor="nw", image=photo, tags="fft_spec overlay")
                 note = f" (downsampled to {sw}×{sh})" if scale < 1.0 else ""
                 self._fft_status.config(
                     text=f"Image {iw}×{ih}{note}. Click to place notches.",
                     fg=TEXT_DIM)
+                # Redraw via the normal path — ensures canvas is fully consistent
+                # before any clicks are processed. Direct canvas manipulation here
+                # caused stale _fft_disp bugs when _redraw_working fired mid-update.
+                self._redraw_working()
             self.after(0, _done)
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -2342,6 +2348,8 @@ class FTImgedit(tk.Tk):
     def _fft_draw_notches(self):
         oc = self._overlay
         oc.delete("fft_notch")
+        oc.delete("fft_anchor")
+        oc.delete("fft_rubberband")
         d = self._fft_disp
         sz,ox,oy = d["sz"], d["ox"], d["oy"]
         for cx,cy,r in self._fft_notches:
@@ -2351,6 +2359,15 @@ class FTImgedit(tk.Tk):
             mx,my = (sz-cx)+ox, (sz-cy)+oy
             oc.create_oval(mx-r,my-r,mx+r,my+r,
                            outline="#ff8888", width=1, dash=(4,3), tags="fft_notch")
+        # Draw line-mode anchor if set
+        anc = getattr(self, '_fft_line_anchor', None)
+        if anc is not None:
+            ax2, ay2 = anc[0]+ox, anc[1]+oy
+            arm = 10
+            oc.create_line(ax2-arm, ay2, ax2+arm, ay2, fill="#ffdd00", width=2, tags="fft_anchor")
+            oc.create_line(ax2, ay2-arm, ax2, ay2+arm, fill="#ffdd00", width=2, tags="fft_anchor")
+            oc.create_oval(ax2-4, ay2-4, ax2+4, ay2+4,
+                           outline="#ffdd00", width=2, tags="fft_anchor")
 
     def _fft_click(self, e):
         if self._fft_F_cache[0] is None:
@@ -2362,6 +2379,11 @@ class FTImgedit(tk.Tk):
         if getattr(self, '_fft_preview_mode', False) or self._fft_preview_img[0] is not None:
             self._fft_show_spectrum()
             return
+        # Cancel any pending line anchor
+        if self._fft_line_anchor is not None:
+            self._fft_line_anchor = None
+            self._overlay.delete("fft_anchor")
+            self._overlay.delete("fft_rubberband")
         d  = self._fft_disp
         sx = e.x - d["ox"]; sy = e.y - d["oy"]
         if not (0 <= sx < d["sz"] and 0 <= sy < d["sz"]): return
@@ -2375,6 +2397,59 @@ class FTImgedit(tk.Tk):
         self._fft_notches.append((sx, sy, r))
         self._fft_draw_notches()
         self._fft_update_status(prefix="Patch replaced. " if mode == "Replace" else "")
+
+    def _fft_shift_click(self, e):
+        """Shift+click: set line anchor on first call, draw line on second."""
+        if self._fft_F_cache[0] is None:
+            self._fft_status.config(text="Compute spectrum first.", fg="#ff6666"); return
+        if getattr(self, '_fft_preview_mode', False) or self._fft_preview_img[0] is not None:
+            self._fft_show_spectrum()
+            return
+        d  = self._fft_disp
+        sx = e.x - d["ox"]; sy = e.y - d["oy"]
+        if not (0 <= sx < d["sz"] and 0 <= sy < d["sz"]): return
+        if self._fft_line_anchor is None:
+            # First shift-click — store anchor
+            self._fft_line_anchor = (sx, sy)
+            self._fft_draw_notches()
+            self._fft_update_status(prefix="Anchor set. ")
+        else:
+            # Second shift-click — draw line of patches
+            ax, ay = self._fft_line_anchor
+            r = self._fft_radius_var.get()
+            self._fft_add_line(ax, ay, sx, sy, r)
+            self._fft_line_anchor = None
+            self._overlay.delete("fft_anchor")
+            self._overlay.delete("fft_rubberband")
+            self._fft_draw_notches()
+            self._fft_update_status(prefix="Line added. ")
+
+    def _fft_add_line(self, x1, y1, x2, y2, r):
+        """Place overlapping circular notches from (x1,y1) to (x2,y2)."""
+        import math as _math
+        dist = _math.hypot(x2 - x1, y2 - y1)
+        step = max(r * 1.4, 1.0)
+        n    = max(int(dist / step) + 1, 2)
+        mode = self._fft_mode_var.get() if hasattr(self, '_fft_mode_var') else "Add"
+        for i in range(n):
+            t  = i / (n - 1)
+            cx = x1 + t * (x2 - x1)
+            cy = y1 + t * (y2 - y1)
+            if mode == "Replace":
+                self._fft_remove_nearest(int(cx), int(cy), silent_if_miss=True)
+            self._fft_notches.append((cx, cy, r))
+
+    def _fft_draw_rubberband(self, ex, ey):
+        """Draw a preview line from anchor to current mouse position."""
+        oc = self._overlay
+        oc.delete("fft_rubberband")
+        anc = getattr(self, '_fft_line_anchor', None)
+        if anc is None: return
+        d = self._fft_disp
+        ox, oy = d["ox"], d["oy"]
+        ax2, ay2 = anc[0] + ox, anc[1] + oy
+        oc.create_line(ax2, ay2, ex, ey,
+                       fill="#ffdd00", width=1, dash=(6, 4), tags="fft_rubberband")
 
     def _fft_remove_nearest(self, sx, sy, silent_if_miss=False):
         if not self._fft_notches:
@@ -2399,8 +2474,15 @@ class FTImgedit(tk.Tk):
     def _fft_update_status(self, prefix=""):
         n = len(self._fft_notches)
         mode = self._fft_mode_var.get() if hasattr(self, '_fft_mode_var') else "Add"
-        self._fft_status.config(
-            text=f"{prefix}{n} patch{'es' if n!=1 else ''}. Mode: {mode}. Preview Filter shows the filtered image only; Back to Edit Dots returns to the patch editor.", fg=TEXT_DIM)
+        anc = getattr(self, '_fft_line_anchor', None)
+        if anc is not None:
+            self._fft_status.config(
+                text=f"{prefix}{n} patch{'es' if n!=1 else ''}. Anchor set — Shift+click end point to draw line. Plain click cancels.",
+                fg="#ffdd00")
+        else:
+            self._fft_status.config(
+                text=f"{prefix}{n} patch{'es' if n!=1 else ''}. Mode: {mode}. Shift+click twice to draw a notch line.",
+                fg=TEXT_DIM)
 
     def _fft_undo_notch(self):
         if self._fft_notches:
@@ -2517,6 +2599,18 @@ class FTImgedit(tk.Tk):
         threading.Thread(target=_worker, daemon=True).start()
 
     # ── Mouse event binding ───────────────────────────────────────────────────
+
+    def _on_shift_press(self, e):
+        tab = self._active_tab[0]
+        if tab == "FFT Filter":
+            if self._fft_click_bound[0]:
+                self._fft_shift_click(e)
+            return
+
+    def _on_motion(self, e):
+        if self._active_tab[0] == "FFT Filter" and self._fft_click_bound[0]:
+            if getattr(self, '_fft_line_anchor', None) is not None:
+                self._fft_draw_rubberband(e.x, e.y)
 
     def _on_press(self, e):
         tab = self._active_tab[0]
