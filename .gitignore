@@ -7,11 +7,10 @@ __pycache__/
 # Logs
 *.log
 FTVideo_error.log
+pygame_debug.txt
 
 # INI / config (contain local paths — not portable)
-# Comment these out if you want to track INI files
-FTVideo.ini
-FTMenu.ini
+*.ini
 
 # Thumbnail disk cache (regenerated on demand)
 ft_thumb_cache/
@@ -19,8 +18,28 @@ ft_thumb_cache/
 # Temp / editor
 *.tmp
 *.bak
+*.bak_*
 .DS_Store
 Thumbs.db
 
 # Zip snapshots
 *.zip
+
+# Linux FUSE temp files
+.fuse_hidden*
+
+# SQLite databases
+*.db
+
+# IPC / runtime files
+FT_IPC/
+main/FT_IPC/
+
+# Project folders (contain local DBs, not source code)
+main/FTProj_*/
+
+# Build ID
+.ft_build_id
+
+# Random temp files (no extension or unknown)
+zi*
