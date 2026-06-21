@@ -574,10 +574,73 @@ class FTZoomMixin:
             if path not in self.tagged_order: self.tagged_order.append(path)
         self._save_current_collection()
 
+    @staticmethod
+    def _zoom_date_taken(path: str) -> str:
+        """Return date-taken string formatted as 'dd MMM yyyy', or '' if no EXIF/metadata.
+
+        Sources tried in order:
+          1. ft_metadata_cache — fastest, populated after first thumbnail gen
+          2. Pillow EXIF      — for photos, instant in-process read (DateTimeOriginal)
+        If neither has a date, returns '' (nothing is shown).
+        """
+        import re as _re
+        import os as _os
+
+        months = ("Jan","Feb","Mar","Apr","May","Jun",
+                  "Jul","Aug","Sep","Oct","Nov","Dec")
+
+        def _fmt(y, mo, d):
+            if 1 <= mo <= 12:
+                return f"{d:02d} {months[mo-1]} {y}"
+            return ""
+
+        def _parse_iso(raw):
+            """Parse 'YYYY:MM:DD ...' or 'YYYY-MM-DDTHH:...' → (y, mo, d) or None."""
+            m = _re.match(r'(\d{4})[:/-](\d{2})[:/-](\d{2})', (raw or "").strip())
+            return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+
+        # 1. Metadata cache (ffprobe result from prior thumbnail generation)
+        try:
+            try:
+                from libraries import ft_metadata_cache as _fmc
+            except ImportError:
+                import ft_metadata_cache as _fmc  # type: ignore
+            raw = _fmc.get_creation_time(path)
+            if raw:
+                t = _parse_iso(raw)
+                if t:
+                    return _fmt(*t)
+        except Exception:
+            pass
+
+        # 2. Pillow EXIF — fast in-process read for photos
+        ext = _os.path.splitext(path)[1].lower()
+        if ext in ('.jpg', '.jpeg', '.tif', '.tiff'):
+            try:
+                from PIL import Image as _Img
+                with _Img.open(path) as _im:
+                    exif = _im._getexif() or {}
+                # Tag 36867 = DateTimeOriginal, 36868 = DateTimeDigitized, 306 = DateTime
+                for tag in (36867, 36868, 306):
+                    val = exif.get(tag)
+                    if val:
+                        t = _parse_iso(val)
+                        if t:
+                            return _fmt(*t)
+            except Exception:
+                pass
+
+        return ""
+
     def _zoom_update_info(self, st):
         """Update info label and path label for current file."""
         path = st.cur_path[0]
-        if st.lbl_path: st.lbl_path.config(text=os.path.dirname(path))
+        if st.lbl_path:
+            date_str = self._zoom_date_taken(path)
+            path_text = os.path.dirname(path)
+            if date_str:
+                path_text = f"{path_text}        {date_str}"
+            st.lbl_path.config(text=path_text)
         if st.lbl_info:
             sz = os.path.getsize(path)//1024 if os.path.exists(path) else 0
             info = f"{sz:,} KB"

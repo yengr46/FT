@@ -92,12 +92,17 @@ from libraries.ft_viewer import ViewerPanel, make_preview_thumbnail
 from libraries.ft_zoom import FTZoomMixin
 from libraries import ft_db
 from libraries import ft_thumb_cache as _ft_thumb_cache
+from libraries import ft_thumb_cache as _ftc  # short alias used in several methods
 from libraries import ft_contactsheet
 from libraries import ft_pdf_ops
 from libraries import ft_file_ops
 from libraries import ft_print
 from libraries import ft_startup
 ft_startup.set_build_source(__file__)
+from datetime import datetime
+import subprocess
+from tkinter import messagebox
+from libraries.ft_file_ops import sort_files
 from libraries.ft_file_labels import display_name as _file_display_name
 
 try:
@@ -154,7 +159,6 @@ THUMB_STORE_SIZE = 250    # fixed storage size in DB — independent of display 
 DEFAULT_COLS = 10           # default column count — override in ini [display] cols=N
 GRID_TOP_PAD = 0  # grid_frame starts at y=0 in canvas
 
-BLOB_IN_MEM_LIMIT = 8_000_000  # cache blobs up to 8MB in memory
 COLL_PREFIX      = "_tags_"
 FT_SYSTEM_DIR    = "_FileTagger"           # top-level system folder under each root
 COLL_SUBDIR      = "_Collections"          # inside FT_SYSTEM_DIR
@@ -829,6 +833,159 @@ def _migrate_txt_to_db(root):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# ── DockableToolbar ────────────────────────────────────────────────────────────
+
+class DockableToolbar:
+    """A labelled button strip that can be detached into a floating Toplevel.
+
+    Previously defined inline inside FileTagger._build_ui; moved to module level
+    so it is independently readable and testable.
+    """
+    def __init__(self, dock_row, name, label, bg, buttons, extras_fn=None, tips=None, cmds=None):
+        self.name      = name
+        self.label     = label
+        self.bg        = bg
+        self.buttons   = buttons
+        self.extras_fn = extras_fn
+        self.tips      = tips or {}
+        self._cmds     = cmds or {}
+        self.floating  = False
+        self.tl        = None
+        self.named_btns = {}
+        self._dragging  = False
+        self._gx = self._gy = 0
+        self.outer = tk.Frame(dock_row, bg=bg,
+                              highlightbackground="#888", highlightthickness=1)
+        self.outer.pack(side="left", padx=4, pady=3)
+        self._fill_docked()
+
+    def _fill_docked(self):
+        for w in self.outer.winfo_children(): w.destroy()
+        self.named_btns.clear()
+        row = tk.Frame(self.outer, bg=self.bg)
+        row.pack(padx=2, pady=2)
+        tk.Button(row, text="⇱", bg=self.bg, fg="white",
+                  font=("Segoe UI",9), relief="flat", bd=0, padx=4,
+                  cursor="hand2", activebackground=self.bg,
+                  command=self.detach).pack(side="left", padx=(1,0))
+        _lbl_bg = "#999999"
+        _lbl_fg = "#111111"
+        lbl = tk.Label(row, text=self.label, bg=_lbl_bg, fg=_lbl_fg,
+                       font=("Segoe UI",8,"bold"), padx=6, pady=0, cursor="fleur")
+        lbl.pack(side="left", fill="y")
+        self._fill_buttons(row, floating=False)
+        lbl.bind("<ButtonPress-1>",   self._press)
+        lbl.bind("<B1-Motion>",       self._motion)
+        lbl.bind("<ButtonRelease-1>", self._release)
+
+    def _fill_buttons(self, parent, floating=False):
+        sz,px,py = (9,8,4) if floating else (8,6,3)
+        cmds = getattr(self, '_cmds', {})
+        for text, btn_bg in self.buttons:
+            b = tk.Button(parent, text=text, bg=btn_bg, fg="white",
+                          font=("Segoe UI",sz,"bold"), relief="flat",
+                          padx=px, pady=py, cursor="hand2",
+                          activebackground="#555", activeforeground="white",
+                          command=cmds.get(text, lambda: None))
+            b.pack(side="left", padx=2, pady=2)
+            self.named_btns[text] = b
+            if text in self.tips:
+                _tip(b, self.tips[text])
+        if self.extras_fn:
+            self.extras_fn(parent, self.bg)
+
+    def _press(self, e):
+        if self.floating: return
+        self.outer.update_idletasks()
+        self._gx = e.x_root - self.outer.winfo_rootx()
+        self._gy = e.y_root - self.outer.winfo_rooty()
+        self._dragging = False
+
+    def _motion(self, e):
+        if self.floating: return
+        if not self._dragging:
+            if abs(e.x_root - self.outer.winfo_rootx() - self._gx) > 4 or \
+               abs(e.y_root - self.outer.winfo_rooty() - self._gy) > 4:
+                self._dragging = True
+                self.detach(start_x=e.x_root - self._gx,
+                            start_y=e.y_root - self._gy,
+                            grab_x=self._gx, grab_y=self._gy)
+        # NOTE: after detach, _motion stops because self.floating=True
+
+    def _release(self, e):
+        self._dragging = False
+
+    def detach(self, start_x=None, start_y=None, grab_x=None, grab_y=None):
+        if self.floating: return
+        self.floating = True
+        self.outer.update_idletasks()
+        w = self.outer.winfo_width()
+        h = self.outer.winfo_height()
+        if start_x is None:
+            start_x = self.outer.winfo_rootx()
+            start_y = self.outer.winfo_rooty()
+            grab_x  = w // 2
+            grab_y  = h // 2
+        # Freeze outer size in dock row — don't destroy children (causes blank)
+        self.outer.pack_propagate(False)
+        self.outer.configure(width=w, height=h, highlightbackground="#444")
+        # Build Toplevel
+        self.tl = tk.Toplevel()
+        self.tl.overrideredirect(True)
+        try: self.tl.transient(self.outer.winfo_toplevel())
+        except: pass
+        self.tl.configure(bg=self.bg,
+                          highlightbackground="#888", highlightthickness=1)
+        trow = tk.Frame(self.tl, bg=self.bg)
+        trow.pack(padx=2, pady=2)
+        tlbl = tk.Label(trow, text=self.label, bg="#333", fg="white",
+                        font=("Segoe UI",8,"bold"), padx=8, pady=0, cursor="fleur")
+        tlbl.pack(side="left", fill="y")
+        self._fill_buttons(trow, floating=True)
+        tk.Button(trow, text="⊟", bg="#333", fg="white",
+                  font=("Segoe UI",10), relief="flat", bd=0, padx=8,
+                  cursor="hand2", activebackground="#555",
+                  command=self.dock).pack(side="left", padx=(4,1), fill="y")
+        self.tl.geometry(f"+{start_x}+{start_y}")
+        self.tl.update_idletasks()
+        _p = [grab_x, grab_y]
+        def fp(e): _p[0]=e.x_root-self.tl.winfo_rootx(); _p[1]=e.y_root-self.tl.winfo_rooty()
+        def fd(e): self.tl.geometry(f"+{e.x_root-_p[0]}+{e.y_root-_p[1]}")
+        tlbl.bind("<ButtonPress-1>", fp)
+        tlbl.bind("<B1-Motion>",     fd)
+        self.tl.bind("<B1-Motion>",  fd)
+        self.tl.bind("<ButtonPress-1>", fp)
+
+    def dock(self):
+        if not self.floating: return
+        self.floating = False
+        if self.tl:
+            try: self.tl.destroy()
+            except: pass
+            self.tl = None
+        self.outer.pack_propagate(True)
+        self.outer.configure(width=1, height=1, highlightbackground="#888")
+        self._fill_docked()
+
+
+
+# ── Watermark overlay helper ────────────────────────────────────────────────────
+
+def _wm_strip(cv, x0, y0, x1, y1, text, fg, font_size, tag, bg="#000000"):
+    """Draw a semi-transparent stippled overlay strip with centred text on a canvas.
+
+    Replaces the repeated (create_rectangle stipple=gray50 + create_text) pattern
+    used for DELETING / SELECTED / MOVED / UNREADABLE badges.
+    """
+    cv.create_rectangle(x0, y0, x1, y1,
+                        fill=bg, stipple="gray50", outline="",
+                        tags=tag + "_bg")
+    cv.create_text((x0 + x1) // 2, (y0 + y1) // 2,
+                   text=text, fill=fg,
+                   font=("Segoe UI", font_size, "bold"),
+                   tags=tag)
+
+
 # ── FileTaggerTree — FileCountTree subclass for FileTagger ─────────────────────
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1546,7 +1703,7 @@ class FileTagger(FTZoomMixin):
         _cs_fg  = "#333333"
         cols_size_frame = tk.Frame(row2_outer, bg=_cs_bg,
                                    highlightbackground="#555", highlightthickness=1)
-        cols_size_frame.pack(side="left", padx=(TREE_LEFT_W + 4, 8), pady=2)
+        cols_size_frame.pack(side="left", padx=(4, 8), pady=2)
 
         # Dockable toolbars row2 — packed after cols_size_frame
         row2_centre = tk.Frame(row2_outer, bg=DOCK_BG)
@@ -1655,140 +1812,6 @@ class FileTagger(FTZoomMixin):
                                      font=("Segoe UI",8),width=0,anchor="w")
         self._tb_extras["collection"] = _coll_extras
 
-        # ── DockableToolbar class defined inline ──────────────────────────────
-        _ft_self = self   # capture for use inside class
-
-        class DockableToolbar:
-            def __init__(self, dock_row, name, label, bg, buttons, extras_fn=None, tips=None, cmds=None):
-                self.name      = name
-                self.label     = label
-                self.bg        = bg
-                self.buttons   = buttons
-                self.extras_fn = extras_fn
-                self.tips      = tips or {}
-                self._cmds     = cmds or {}
-                self.floating  = False
-                self.tl        = None
-                self.named_btns = {}
-                self._dragging  = False
-                self._gx = self._gy = 0
-                self.outer = tk.Frame(dock_row, bg=bg,
-                                      highlightbackground="#888", highlightthickness=1)
-                self.outer.pack(side="left", padx=4, pady=3)
-                self._fill_docked()
-
-            def _fill_docked(self):
-                for w in self.outer.winfo_children(): w.destroy()
-                self.named_btns.clear()
-                row = tk.Frame(self.outer, bg=self.bg)
-                row.pack(padx=2, pady=2)
-                tk.Button(row, text="⇱", bg=self.bg, fg="white",
-                          font=("Segoe UI",9), relief="flat", bd=0, padx=4,
-                          cursor="hand2", activebackground=self.bg,
-                          command=self.detach).pack(side="left", padx=(1,0))
-                _lbl_bg = "#999999"
-                _lbl_fg = "#111111"
-                lbl = tk.Label(row, text=self.label, bg=_lbl_bg, fg=_lbl_fg,
-                               font=("Segoe UI",8,"bold"), padx=6, pady=0, cursor="fleur")
-                lbl.pack(side="left", fill="y")
-                self._fill_buttons(row, floating=False)
-                lbl.bind("<ButtonPress-1>",   self._press)
-                lbl.bind("<B1-Motion>",       self._motion)
-                lbl.bind("<ButtonRelease-1>", self._release)
-
-            def _fill_buttons(self, parent, floating=False):
-                sz,px,py = (9,8,4) if floating else (8,6,3)
-                cmds = getattr(self, '_cmds', {})
-                for text, btn_bg in self.buttons:
-                    b = tk.Button(parent, text=text, bg=btn_bg, fg="white",
-                                  font=("Segoe UI",sz,"bold"), relief="flat",
-                                  padx=px, pady=py, cursor="hand2",
-                                  activebackground="#555", activeforeground="white",
-                                  command=cmds.get(text, lambda: None))
-                    b.pack(side="left", padx=2, pady=2)
-                    self.named_btns[text] = b
-                    if text in self.tips:
-                        _tip(b, self.tips[text])
-                if self.extras_fn:
-                    self.extras_fn(parent, self.bg)
-
-            def _press(self, e):
-                if self.floating: return
-                self.outer.update_idletasks()
-                self._gx = e.x_root - self.outer.winfo_rootx()
-                self._gy = e.y_root - self.outer.winfo_rooty()
-                self._dragging = False
-
-            def _motion(self, e):
-                if self.floating: return
-                if not self._dragging:
-                    if abs(e.x_root - self.outer.winfo_rootx() - self._gx) > 4 or                        abs(e.y_root - self.outer.winfo_rooty() - self._gy) > 4:
-                        self._dragging = True
-                        # Detach at current mouse position
-                        self.detach(start_x=e.x_root - self._gx,
-                                    start_y=e.y_root - self._gy,
-                                    grab_x=self._gx, grab_y=self._gy)
-                # NOTE: after detach, _motion stops because self.floating=True
-
-            def _release(self, e):
-                self._dragging = False
-
-            def detach(self, start_x=None, start_y=None, grab_x=None, grab_y=None):
-                if self.floating: return
-                self.floating = True
-                self.outer.update_idletasks()
-                w = self.outer.winfo_width()
-                h = self.outer.winfo_height()
-                if start_x is None:
-                    start_x = self.outer.winfo_rootx()
-                    start_y = self.outer.winfo_rooty()
-                    grab_x  = w // 2
-                    grab_y  = h // 2
-                # Freeze outer size in dock row — don't destroy children (causes blank)
-                self.outer.pack_propagate(False)
-                self.outer.configure(width=w, height=h, highlightbackground="#444")
-                # Build Toplevel
-                self.tl = tk.Toplevel()
-                self.tl.overrideredirect(True)
-                # transient keeps it above FT but not above other apps
-                try: self.tl.transient(self.outer.winfo_toplevel())
-                except: pass
-                self.tl.configure(bg=self.bg,
-                                  highlightbackground="#888", highlightthickness=1)
-                trow = tk.Frame(self.tl, bg=self.bg)
-                trow.pack(padx=2, pady=2)
-                tlbl = tk.Label(trow, text=self.label, bg="#333", fg="white",
-                                font=("Segoe UI",8,"bold"), padx=8, pady=0, cursor="fleur")
-                tlbl.pack(side="left", fill="y")
-                self._fill_buttons(trow, floating=True)
-                tk.Button(trow, text="⊟", bg="#333", fg="white",
-                          font=("Segoe UI",10), relief="flat", bd=0, padx=8,
-                          cursor="hand2", activebackground="#555",
-                          command=self.dock).pack(side="left", padx=(4,1), fill="y")
-                # Position before binding so winfo_rootx is valid for drag
-                self.tl.geometry(f"+{start_x}+{start_y}")
-                self.tl.update_idletasks()
-                # Drag bindings — on both tlbl and tl so drag works immediately after detach
-                _p = [grab_x, grab_y]
-                def fp(e): _p[0]=e.x_root-self.tl.winfo_rootx(); _p[1]=e.y_root-self.tl.winfo_rooty()
-                def fd(e): self.tl.geometry(f"+{e.x_root-_p[0]}+{e.y_root-_p[1]}")
-                tlbl.bind("<ButtonPress-1>", fp)
-                tlbl.bind("<B1-Motion>",     fd)
-                # Also bind to tl itself so drag initiated from docked label continues
-                self.tl.bind("<B1-Motion>",  fd)
-                self.tl.bind("<ButtonPress-1>", fp)
-
-            def dock(self):
-                if not self.floating: return
-                self.floating = False
-                if self.tl:
-                    try: self.tl.destroy()
-                    except: pass
-                    self.tl = None
-                self.outer.pack_propagate(True)
-                self.outer.configure(width=1, height=1, highlightbackground="#888")
-                self._fill_docked()
-
         # ── Create toolbars ───────────────────────────────────────────────────
         _tb_defs = [
             ("collection","Collection",PANEL_BG,row1_centre,"collection",[]),
@@ -1813,7 +1836,7 @@ class FileTagger(FTZoomMixin):
                 ("Orphans",  "#662266"),("Auto OFF",  "#444444"),
             ]),
             ("system",    "System",    PANEL_BG,row2_centre,None,[
-                ("Settings", "#335577"),("About",    "#335577"),("DB Status", "#2d5a2d"),("Project", "#664422"),("Maintenance", "#553322"),
+                ("Settings", "#335577"),("Maintenance", "#553322"),("DB Status", "#2d5a2d"),("Project", "#664422"),
             ]),
         ]
 
@@ -2918,10 +2941,6 @@ class FileTagger(FTZoomMixin):
         try: self.tree.focus(root_dir)
         except: pass
 
-    def _clear_tree(self):
-        for item in self.tree.get_children(""): self.tree.delete(item)
-
-
     def _has_subdirs(self, path):
         try: return any(e.is_dir() for e in os.scandir(_longpath(path)))
         except: return False
@@ -3458,10 +3477,6 @@ class FileTagger(FTZoomMixin):
         if not self._all_files:
             return
         try:
-            try:
-                from libraries.ft_file_ops import sort_files
-            except ImportError:
-                from ft_file_ops import sort_files  # type: ignore[no-redef]
             self._all_files = sort_files(
                 self._all_files,
                 column=self._sort_column,
@@ -3535,10 +3550,6 @@ class FileTagger(FTZoomMixin):
         # Apply user sort preference (overrides default only when explicitly set)
         if self._sort_column != "name" or self._sort_reverse:
             try:
-                try:
-                    from libraries.ft_file_ops import sort_files
-                except ImportError:
-                    from ft_file_ops import sort_files  # type: ignore[no-redef]
                 files = sort_files(files, column=self._sort_column,
                                    reverse=self._sort_reverse)
             except Exception:
@@ -3597,13 +3608,6 @@ class FileTagger(FTZoomMixin):
         """
         if getattr(self, 'current_folder', '') != folder:
             return  # user navigated away; skip
-        try:
-            from libraries import ft_thumb_cache as _ftc
-        except ImportError:
-            try:
-                import ft_thumb_cache as _ftc  # type: ignore
-            except ImportError:
-                return
         try:
             orphans = _ftc.orphaned_paths_in_folder(folder)
         except Exception:
@@ -4491,22 +4495,16 @@ class FileTagger(FTZoomMixin):
         # This remains visible in 2-panel mode until the item is moved back or 2-panel mode ends.
         if is_placed:
             WM_H = 28
-            cv.create_rectangle(IX, IY + IMG_H // 2 - WM_H // 2,
-                                IX + sz, IY + IMG_H // 2 + WM_H // 2,
-                                fill="#000000", stipple="gray50", outline="", tags="moved_watermark_bg")
-            cv.create_text(IX + sz // 2, IY + IMG_H // 2,
-                           text="MOVED", fill="white",
-                           font=("Segoe UI", 18, "bold"), tags="moved_watermark")
+            _wm_strip(cv, IX, IY + IMG_H // 2 - WM_H // 2,
+                      IX + sz, IY + IMG_H // 2 + WM_H // 2,
+                      "MOVED", "white", 18, "moved_watermark")
 
         # DELETING watermark
         if culled:
             WM_H = 20
-            cv.create_rectangle(IX, IY + IMG_H // 2 - WM_H // 2,
-                                IX + sz, IY + IMG_H // 2 + WM_H // 2,
-                                fill="#000000", stipple="gray50", outline="", tags="sel_watermark_bg")
-            cv.create_text(IX + sz // 2, IY + IMG_H // 2,
-                           text="DELETING", fill="#ffdd00",
-                           font=("Segoe UI", 9, "bold"), tags="sel_watermark")
+            _wm_strip(cv, IX, IY + IMG_H // 2 - WM_H // 2,
+                      IX + sz, IY + IMG_H // 2 + WM_H // 2,
+                      "DELETING", "#ffdd00", 9, "sel_watermark")
 
         # Controls row — Mark/Zoom (no rotation in 2-panel)
         _rm = sz // 2
@@ -4725,37 +4723,28 @@ class FileTagger(FTZoomMixin):
             wm_label = getattr(self, '_unreadable_reason', {}).get(orig, "? FILE UNREADABLE")
             WM_H = 28
             wm_y = IY + IMG_H // 6   # top third
-            cv.create_rectangle(IX, wm_y - WM_H // 2,
-                                IX + sz, wm_y + WM_H // 2,
-                                fill="#000000", stipple="gray50", outline="",
-                                tags="unreadable_bg")
-            cv.create_text(IX + sz // 2, wm_y,
-                           text=wm_label, fill="white",
-                           font=("Segoe UI", 16, "bold"),
-                           tags="unreadable_wm")
+            _wm_strip(cv, IX, wm_y - WM_H // 2,
+                      IX + sz, wm_y + WM_H // 2,
+                      wm_label, "white", 16, "unreadable")
+            if "FOLDER" in wm_label:
+                folder_name = os.path.basename(os.path.dirname(orig))
+                cv.create_text(IX + sz // 2, wm_y + WM_H // 2 + 4,
+                               anchor="n", text=folder_name,
+                               fill="#ffcc66", font=("Segoe UI", 8, "bold"),
+                               width=sz - 8, tags="unreadable")
 
         # DELETING takes priority over SELECTED — drawn at vertical centre
         if not ghost and culled:
             WM_H = 28
-            cv.create_rectangle(IX, IY + IMG_H // 2 - WM_H // 2,
-                                IX + sz, IY + IMG_H // 2 + WM_H // 2,
-                                fill="#000000", stipple="gray50", outline="",
-                                tags="sel_watermark_bg")
-            cv.create_text(IX + sz // 2, IY + IMG_H // 2,
-                           text="DELETING", fill="#ffdd00",
-                           font=("Segoe UI", 18, "bold"),
-                           tags="sel_watermark")
+            _wm_strip(cv, IX, IY + IMG_H // 2 - WM_H // 2,
+                      IX + sz, IY + IMG_H // 2 + WM_H // 2,
+                      "DELETING", "#ffdd00", 18, "sel_watermark")
         elif selected and not ghost:
             _sw, _sh = 74, 16
             _sx = IX + max(0, (sz - _sw) // 2)
             _sy = IY + IMG_H - _sh - 4
-            cv.create_rectangle(_sx, _sy, _sx + _sw, _sy + _sh,
-                                fill="#000000", stipple="gray50", outline="",
-                                tags="sel_watermark_bg")
-            cv.create_text(_sx + _sw // 2, _sy + _sh // 2,
-                           text="SELECTED", fill="white",
-                           font=("Segoe UI", 8, "bold"),
-                           tags="sel_watermark")
+            _wm_strip(cv, _sx, _sy, _sx + _sw, _sy + _sh,
+                      "SELECTED", "white", 8, "sel_watermark")
 
         if ghost:
             cv.create_rectangle(IX, IY, IX + sz, IY + IMG_H,
@@ -5018,34 +5007,22 @@ class FileTagger(FTZoomMixin):
                 if culled and selected:
                     del_y = mid_y - WM_H // 2 - 2
                     sel_y = mid_y + WM_H // 2 + 2
-                    cv.create_rectangle(IX, del_y - WM_H//2, IX+sz, del_y + WM_H//2,
-                                        fill="#000000", stipple="gray50", outline="",
-                                        tags="del_watermark_bg")
-                    cv.create_text(IX + sz//2, del_y, text="DELETING", fill="#ffdd00",
-                                   font=("Segoe UI", 16, "bold"), tags="del_watermark")
+                    _wm_strip(cv, IX, del_y - WM_H//2, IX+sz, del_y + WM_H//2,
+                              "DELETING", "#ffdd00", 16, "del_watermark")
                     _sw, _sh = 74, 16
                     _sx = IX + max(0, (sz - _sw) // 2)
                     _sy = IY + img_h - _sh - 4
-                    cv.create_rectangle(_sx, _sy, _sx + _sw, _sy + _sh,
-                                        fill="#000000", stipple="gray50", outline="",
-                                        tags="sel_watermark_bg")
-                    cv.create_text(_sx + _sw // 2, _sy + _sh // 2, text="SELECTED", fill="white",
-                                   font=("Segoe UI", 8, "bold"), tags="sel_watermark")
+                    _wm_strip(cv, _sx, _sy, _sx + _sw, _sy + _sh,
+                              "SELECTED", "white", 8, "sel_watermark")
                 elif culled:
-                    cv.create_rectangle(IX, mid_y - WM_H//2, IX+sz, mid_y + WM_H//2,
-                                        fill="#000000", stipple="gray50", outline="",
-                                        tags="del_watermark_bg")
-                    cv.create_text(IX + sz//2, mid_y, text="DELETING", fill="#ffdd00",
-                                   font=("Segoe UI", 18, "bold"), tags="del_watermark")
+                    _wm_strip(cv, IX, mid_y - WM_H//2, IX+sz, mid_y + WM_H//2,
+                              "DELETING", "#ffdd00", 18, "del_watermark")
                 else:
                     _sw, _sh = 74, 16
                     _sx = IX + max(0, (sz - _sw) // 2)
                     _sy = IY + img_h - _sh - 4
-                    cv.create_rectangle(_sx, _sy, _sx + _sw, _sy + _sh,
-                                        fill="#000000", stipple="gray50", outline="",
-                                        tags="sel_watermark_bg")
-                    cv.create_text(_sx + _sw // 2, _sy + _sh // 2, text="SELECTED", fill="white",
-                                   font=("Segoe UI", 8, "bold"), tags="sel_watermark")
+                    _wm_strip(cv, _sx, _sy, _sx + _sw, _sy + _sh,
+                              "SELECTED", "white", 8, "sel_watermark")
         except Exception: pass
 
     def _cell_colours(self, orig):
@@ -5063,7 +5040,6 @@ class FileTagger(FTZoomMixin):
 
     def _toggle_tag_canvas(self, orig, cv):
         """Tag/untag a file and repaint its canvas cell."""
-        from datetime import datetime
         ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         tagged_set = self._shadow_tagged if self._shadow_active else self.tagged
         tagged_at  = self._shadow_tagged_at if self._shadow_active else self.tagged_at
@@ -5090,7 +5066,6 @@ class FileTagger(FTZoomMixin):
 
     def _toggle_cull_canvas(self, orig, cv):
         """Mark/unmark a file for culling and repaint its canvas cell."""
-        from datetime import datetime
         if orig not in self._culled:
             if orig in self.tagged:
                 if not messagebox.askyesno("Mark for deletion?",
@@ -5322,7 +5297,6 @@ class FileTagger(FTZoomMixin):
 
     def _toggle_cull_cb(self, orig, mark_btn, outer, inner):
         """Toggle cull state. In canvas cells outer==inner==canvas; mark_btn is ignored."""
-        from datetime import datetime
         if orig not in self._culled:
             if orig in self.tagged:
                 if not messagebox.askyesno("Mark for deletion?",
@@ -6072,7 +6046,6 @@ class FileTagger(FTZoomMixin):
         pw.protocol("WM_DELETE_WINDOW", _do_cancel)
 
         def worker():
-            import datetime as _dt
             total = len(files)
             dates = {}  # path -> date object
 
@@ -6085,7 +6058,7 @@ class FileTagger(FTZoomMixin):
                     for tag in (36867, 36868, 306):
                         if tag in exif:
                             try:
-                                dt = _dt.datetime.strptime(exif[tag], "%Y:%m:%d %H:%M:%S")
+                                dt = datetime.strptime(exif[tag], "%Y:%m:%d %H:%M:%S")
                                 dates[fpath] = dt.date()
                                 break
                             except: pass
@@ -6116,7 +6089,6 @@ class FileTagger(FTZoomMixin):
             # Build pairs within date_range
             valid = [(p, d) for p, d in dates.items()]
             pairs = []
-            import datetime as _dt2
             for i in range(len(valid)):
                 if cancel_flag[0]: break
                 for j in range(i+1, len(valid)):
@@ -6223,7 +6195,6 @@ class FileTagger(FTZoomMixin):
 
     def _launch_ftediti(self, path):
         """Launch FTEditI if not running, then send it the file path."""
-        import subprocess
         script = self._ftediti_script()
         if not os.path.isfile(script):
             messagebox.showwarning("FTEditI not found",
@@ -6341,7 +6312,6 @@ class FileTagger(FTZoomMixin):
 
     def _launch_ftmapimg(self, folder, center_path=None, files=None):
         """Launch FTMap if not running, then send it the file list."""
-        import subprocess
         script = self._ftmapimg_script()
         if not os.path.isfile(script):
             messagebox.showwarning("FTMap not found",
@@ -6384,7 +6354,6 @@ class FileTagger(FTZoomMixin):
 
     def _launch_ftvideo_from_selection(self):
         """Launch FTVideo with video files from current selection (or all files in Videos mode)."""
-        import subprocess
         candidates = list(self._selected) if self._selected else list(self._all_files)
         video_files = [f for f in candidates if os.path.splitext(f)[1].lower() in VIDEO_EXTS]
         if not video_files:
@@ -6397,7 +6366,6 @@ class FileTagger(FTZoomMixin):
 
     def _launch_ftvideo(self, files):
         """Launch FTVideo (embedded mode) if not running, then send file list."""
-        import subprocess
         script = self._ftvideo_script()
         if not os.path.isfile(script):
             messagebox.showwarning("FTVideo not found",
@@ -6464,7 +6432,6 @@ class FileTagger(FTZoomMixin):
 
     def _launch_ftfiler(self, files, mode="RENAME", root="", folder=""):
         """Launch FTFiler if not running, then send request."""
-        import subprocess
         script = self._ftfiler_script()
         if not os.path.isfile(script):
             messagebox.showwarning("FTFiler not found",
@@ -6907,7 +6874,6 @@ class FileTagger(FTZoomMixin):
                     # Remove stale thumbnail from cache so the slot is freed and
                     # won't appear as a hit if the filename is reused later.
                     try:
-                        from libraries import ft_thumb_cache as _ftc
                         _ftc.delete_thumb(p)
                     except Exception:
                         pass
@@ -6926,7 +6892,12 @@ class FileTagger(FTZoomMixin):
         self._refresh_tree_stats()
         self._update_cull_radio_hint()
         self._in_cull_view = False
+        # Preserve scroll position so the user stays where they were.
+        _saved_start = getattr(self, '_page_start', 0)
+        _saved_yview = self.canvas.yview()[0]
+        self._page_start_override = _saved_start
         self._load_folder(self.current_folder)
+        self.win.after(300, lambda y=_saved_yview: self.canvas.yview_moveto(y))
         msg = f"Cull operation complete.\n\n"
         if action == "cull_only":
             msg += f"{len(candidates)} files removed from cull list."
@@ -6939,7 +6910,6 @@ class FileTagger(FTZoomMixin):
 
     def _toggle_tag_cb(self, orig, tag_var, outer, inner):
         """Called from spacebar and zoom-window tag checkbox. outer==inner==canvas."""
-        from datetime import datetime
         ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         tagged_set = self._shadow_tagged if self._shadow_active else self.tagged
         tagged_at  = self._shadow_tagged_at if self._shadow_active else self.tagged_at
@@ -6969,7 +6939,6 @@ class FileTagger(FTZoomMixin):
                 break
 
     def _tag_all_visible(self):
-        from datetime import datetime
         ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         tagged_set = self._shadow_tagged if self._shadow_active else self.tagged
         tagged_at  = self._shadow_tagged_at if self._shadow_active else self.tagged_at
@@ -7812,26 +7781,17 @@ class FileTagger(FTZoomMixin):
                         WM_H = 28
                         mid_y = (y0 + y1) // 2
                         if is_cull and not is_placed:
-                            cv.create_rectangle(x0, mid_y - WM_H//2, x1, mid_y + WM_H//2,
-                                                fill="#000000", stipple="gray50", outline="",
-                                                tags="del_watermark_bg")
-                            cv.create_text((x0+x1)//2, mid_y, text="DELETING", fill="#ffdd00",
-                                           font=("Segoe UI", 18, "bold"), tags="del_watermark")
+                            _wm_strip(cv, x0, mid_y - WM_H//2, x1, mid_y + WM_H//2,
+                                      "DELETING", "#ffdd00", 18, "del_watermark")
                         elif is_placed:
-                            cv.create_rectangle(x0, mid_y - WM_H//2, x1, mid_y + WM_H//2,
-                                                fill="#000000", stipple="gray50", outline="",
-                                                tags="moved_watermark_bg")
-                            cv.create_text((x0+x1)//2, mid_y, text="MOVED", fill="white",
-                                           font=("Segoe UI", 18, "bold"), tags="moved_watermark")
+                            _wm_strip(cv, x0, mid_y - WM_H//2, x1, mid_y + WM_H//2,
+                                      "MOVED", "white", 18, "moved_watermark")
                         elif is_sel:
                             _sw, _sh = 74, 16
                             _sx = (x0 + x1) // 2 - _sw // 2
                             _sy = y1 - _sh - 4
-                            cv.create_rectangle(_sx, _sy, _sx + _sw, _sy + _sh,
-                                                fill="#000000", stipple="gray50", outline="",
-                                                tags="sel_watermark_bg")
-                            cv.create_text(_sx + _sw // 2, _sy + _sh // 2, text="SELECTED", fill="white",
-                                           font=("Segoe UI", 8, "bold"), tags="sel_watermark")
+                            _wm_strip(cv, _sx, _sy, _sx + _sw, _sy + _sh,
+                                      "SELECTED", "white", 8, "sel_watermark")
                 else:
                     is_sel  = orig in self._selected
                     is_cull = orig in self._culled
@@ -7849,35 +7809,22 @@ class FileTagger(FTZoomMixin):
                     if is_cull and is_sel:
                         # Both — DELETING upper, SELECTED lower
                         del_y = mid_y - WM_H // 2 - 2
-                        sel_y = mid_y + WM_H // 2 + 2
-                        cv.create_rectangle(IX, del_y - WM_H//2, IX+SZ, del_y + WM_H//2,
-                                            fill="#000000", stipple="gray50", outline="",
-                                            tags="del_watermark_bg")
-                        cv.create_text(IX + SZ//2, del_y, text="DELETING", fill="#ffdd00",
-                                       font=("Segoe UI", 16, "bold"), tags="del_watermark")
+                        _wm_strip(cv, IX, del_y - WM_H//2, IX+SZ, del_y + WM_H//2,
+                                  "DELETING", "#ffdd00", 16, "del_watermark")
                         _sw, _sh = 74, 16
                         _sx = IX + max(0, (SZ - _sw) // 2)
                         _sy = IY + img_h - _sh - 4
-                        cv.create_rectangle(_sx, _sy, _sx + _sw, _sy + _sh,
-                                            fill="#000000", stipple="gray50", outline="",
-                                            tags="sel_watermark_bg")
-                        cv.create_text(_sx + _sw // 2, _sy + _sh // 2, text="SELECTED", fill="white",
-                                       font=("Segoe UI", 8, "bold"), tags="sel_watermark")
+                        _wm_strip(cv, _sx, _sy, _sx + _sw, _sy + _sh,
+                                  "SELECTED", "white", 8, "sel_watermark")
                     elif is_cull:
-                        cv.create_rectangle(IX, mid_y - WM_H//2, IX+SZ, mid_y + WM_H//2,
-                                            fill="#000000", stipple="gray50", outline="",
-                                            tags="del_watermark_bg")
-                        cv.create_text(IX + SZ//2, mid_y, text="DELETING", fill="#ffdd00",
-                                       font=("Segoe UI", 18, "bold"), tags="del_watermark")
+                        _wm_strip(cv, IX, mid_y - WM_H//2, IX+SZ, mid_y + WM_H//2,
+                                  "DELETING", "#ffdd00", 18, "del_watermark")
                     elif is_sel:
                         _sw, _sh = 74, 16
                         _sx = IX + max(0, (SZ - _sw) // 2)
                         _sy = IY + img_h - _sh - 4
-                        cv.create_rectangle(_sx, _sy, _sx + _sw, _sy + _sh,
-                                            fill="#000000", stipple="gray50", outline="",
-                                            tags="sel_watermark_bg")
-                        cv.create_text(_sx + _sw // 2, _sy + _sh // 2, text="SELECTED", fill="white",
-                                       font=("Segoe UI", 8, "bold"), tags="sel_watermark")
+                        _wm_strip(cv, _sx, _sy, _sx + _sw, _sy + _sh,
+                                  "SELECTED", "white", 8, "sel_watermark")
             except Exception: pass
         self._update_sel_buttons()
     def _update_sel_buttons(self):
@@ -7936,8 +7883,7 @@ class FileTagger(FTZoomMixin):
         except: pass
 
     def _stub_operations(self):
-        import tkinter.messagebox as mb
-        mb.showinfo("Operations", "Here is where the operation will be selected.",
+        messagebox.showinfo("Operations", "Here is where the operation will be selected.",
                     parent=self.win)
 
     def _update_sel_bar(self):
@@ -8148,7 +8094,6 @@ class FileTagger(FTZoomMixin):
                         self._culled.discard(fp)
                         if fp in self._culled_at: del self._culled_at[fp]
                     else:
-                        from datetime import datetime
                         self._culled.add(fp)
                         self._culled_at[fp] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     _write_cull_list(self.mode_cfg['root'], self._culled, self._culled_at)
@@ -8224,11 +8169,8 @@ class FileTagger(FTZoomMixin):
                                 x0 = (cw - sz) // 2
                                 x1 = x0 + sz
                                 cv.delete("move_watermark"); cv.delete("move_watermark_bg")
-                                cv.create_rectangle(x0, ymid - WM_H//2, x1, ymid + WM_H//2,
-                                                    fill="#000000", stipple="gray50", outline="",
-                                                    tags="move_watermark_bg")
-                                cv.create_text((x0+x1)//2, ymid, text="MOVE", fill="white",
-                                               font=("Segoe UI", 18, "bold"), tags="move_watermark")
+                                _wm_strip(cv, x0, ymid - WM_H//2, x1, ymid + WM_H//2,
+                                          "MOVE", "white", 18, "move_watermark")
                         except: pass
                     self.win.after(0, _place)
                 except: pass
@@ -8278,11 +8220,8 @@ class FileTagger(FTZoomMixin):
                                 x0, y0, x1, y1 = bbox
                                 WM_H = 28
                                 mid_y = (y0 + y1) // 2
-                                widget.create_rectangle(x0, mid_y - WM_H//2, x1, mid_y + WM_H//2,
-                                                        fill="#000000", stipple="gray50", outline="",
-                                                        tags="move_watermark_bg")
-                                widget.create_text((x0+x1)//2, mid_y, text="MOVE", fill="white",
-                                                   font=("Segoe UI", 18, "bold"), tags="move_watermark")
+                                _wm_strip(widget, x0, mid_y - WM_H//2, x1, mid_y + WM_H//2,
+                                          "MOVE", "white", 18, "move_watermark")
                     except: pass
                 self._update_sel_bar()
 
@@ -8598,7 +8537,6 @@ class FileTagger(FTZoomMixin):
         """Mark for Deletion — adds selected to cull list, shows DELETING watermark."""
         files = list(self._selected) or list(self._placed)
         if not files: return
-        from datetime import datetime
         ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         for orig in files:
             self._culled.add(orig)
@@ -8615,7 +8553,7 @@ class FileTagger(FTZoomMixin):
         self._status(f"✓  {n} file{'s' if n!=1 else ''} marked for deletion")
 
     def _ops_copy_move(self):
-        """Copy/Move to Folder — simple dialog with folder selection and confirmation."""
+        """Copy/Move to Folder — dialog with folder selection, delegates to ft_file_ops."""
         files = list(self._selected) or list(self._placed)
         if not files:
             return
@@ -8629,12 +8567,10 @@ class FileTagger(FTZoomMixin):
         dlg.configure(bg=BG3)
         self._centre_window(dlg, 480, 260)
 
-        # Header
         tk.Label(dlg, text=f"Copy or Move {len(files)} file{'s' if len(files)!=1 else ''}",
                  bg=HDR_BG, fg="white", font=("Segoe UI", 10, "bold"),
                  padx=12, pady=6).pack(fill="x")
 
-        # Operation choice
         op_var = tk.StringVar(value="copy")
         op_frame = tk.Frame(dlg, bg=BG3)
         op_frame.pack(fill="x", padx=16, pady=(12, 4))
@@ -8647,17 +8583,16 @@ class FileTagger(FTZoomMixin):
                        bg=BG3, fg=TEXT_BRIGHT, selectcolor=BG,
                        font=("Segoe UI", 9), activebackground=BG3).pack(side="left", padx=8)
 
-        # Folder selection
         folder_var = tk.StringVar(value="")
         f_frame = tk.Frame(dlg, bg=BG3)
         f_frame.pack(fill="x", padx=16, pady=4)
         tk.Label(f_frame, text="Destination:", bg=BG3, fg=TEXT_BRIGHT,
                  font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 8))
-        folder_entry = tk.Entry(f_frame, textvariable=folder_var,
-                                font=("Segoe UI", 9), bg=BG, fg=TEXT_BRIGHT,
-                                insertbackground=TEXT_BRIGHT, relief="flat",
-                                highlightthickness=1, highlightbackground="#555")
-        folder_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        tk.Entry(f_frame, textvariable=folder_var,
+                 font=("Segoe UI", 9), bg=BG, fg=TEXT_BRIGHT,
+                 insertbackground=TEXT_BRIGHT, relief="flat",
+                 highlightthickness=1, highlightbackground="#555"
+                 ).pack(side="left", fill="x", expand=True, padx=(0, 6))
 
         def _browse():
             from tkinter import filedialog
@@ -8671,20 +8606,18 @@ class FileTagger(FTZoomMixin):
                   relief="flat", padx=8, pady=2, cursor="hand2",
                   activebackground="#446688").pack(side="left")
 
-        # Summary label
         summary_lbl = tk.Label(dlg, text="Select a destination folder",
                                bg=BG3, fg=TEXT_DIM, font=("Segoe UI", 9),
                                padx=16, pady=4, anchor="w")
         summary_lbl.pack(fill="x")
 
-        def _update_summary(*args):
+        def _update_summary(*_):
             dest = folder_var.get().strip()
             if dest and os.path.isdir(_longpath(dest)):
-                op = op_var.get().capitalize()
-                n = len(files)
-                fname = os.path.basename(dest) or dest
+                op  = op_var.get().capitalize()
+                n   = len(files)
                 summary_lbl.config(
-                    text=f"{op} {n} file{'s' if n!=1 else ''} to:  {fname}",
+                    text=f"{op} {n} file{'s' if n!=1 else ''} to:  {os.path.basename(dest) or dest}",
                     fg=TEXT_BRIGHT)
             else:
                 summary_lbl.config(text="Select a destination folder", fg=TEXT_DIM)
@@ -8692,65 +8625,42 @@ class FileTagger(FTZoomMixin):
         folder_var.trace_add("write", _update_summary)
         op_var.trace_add("write", _update_summary)
 
-        # Buttons
         bf = tk.Frame(dlg, bg=BG3)
         bf.pack(pady=10)
 
         def _execute():
-            import shutil
             dest = folder_var.get().strip()
             if not dest or not os.path.isdir(_longpath(dest)):
-                import tkinter.messagebox as mb
-                mb.showwarning("No folder", "Please select a valid destination folder.", parent=dlg)
+                messagebox.showwarning("No folder", "Please select a valid destination folder.", parent=dlg)
                 return
             op = op_var.get()
-            errors = []
-            moved_log = []
-            for orig in files:
-                try:
-                    fname = os.path.basename(orig)
-                    dst = os.path.join(dest, fname)
-                    if os.path.exists(_longpath(dst)):
-                        stem, ext = os.path.splitext(fname)
-                        n = 1
-                        while os.path.exists(_longpath(dst)):
-                            dst = os.path.join(dest, f"{stem}_{n}{ext}"); n += 1
-                    if op == "copy":
-                        shutil.copy2(_longpath(orig), _longpath(dst))
-                    else:
-                        shutil.move(_longpath(orig), _longpath(dst))
-                        moved_log.append((orig, dst))
-                except Exception as ex:
-                    errors.append(f"{os.path.basename(orig)}: {ex}")
-
-            # Update blob and state for moves
-            if moved_log:
-                srcs = [s for s, d in moved_log]
-                try: thumb_move(srcs, dest)
-                except: pass
-                for orig, dst in moved_log:
-                    # Update tagged_order, tagged, _all_files
-                    if orig in self.tagged:
-                        self.tagged.discard(orig); self.tagged.add(dst)
-                        ts = self.tagged_at.pop(orig, "")
-                        self.tagged_at[dst] = ts
-                        try:
-                            i = self.tagged_order.index(orig)
-                            self.tagged_order[i] = dst
-                        except: pass
-                    try:
-                        i = self._all_files.index(orig)
-                        self._all_files[i] = dst
-                    except: pass
-
             dlg.destroy()
-            n_done = len(files) - len(errors)
-            msg = f"{'Moved' if op=='move' else 'Copied'} {n_done} file{'s' if n_done!=1 else ''} to {os.path.basename(dest) or dest}"
-            if errors:
-                msg += f"\n\n{len(errors)} error(s):\n" + "\n".join(errors[:5])
-            import tkinter.messagebox as mb
-            mb.showinfo("Complete", msg, parent=self.win)
-            if op == "move":
+            if op == "copy":
+                result = ft_file_ops.copy_files(files, dest, overwrite=False)
+                # Propagate thumbnails for copied files
+                copied_thumb_items = []
+                for src, dst in result.copied:
+                    try:
+                        blob = thumb_get(src) if self.use_stored_thumbs.get() else None
+                        if blob:
+                            copied_thumb_items.append((dst, blob))
+                    except Exception:
+                        pass
+                if copied_thumb_items:
+                    try: thumb_put_many(copied_thumb_items)
+                    except Exception: pass
+                self._context_finish_file_op(result, extra_folders=[dest, getattr(self, "current_folder", "")])
+                self._context_show_file_op_result("Copy to Folder", result)
+            else:
+                result = ft_file_ops.move_files(files, dest, overwrite=False)
+                moved_pairs = list(result.moved)
+                if moved_pairs:
+                    srcs = [s for s, _d in moved_pairs]
+                    try: thumb_move(srcs, dest)
+                    except Exception: pass
+                    self._context_update_state_after_moves(moved_pairs)
+                self._context_finish_file_op(result, extra_folders=[dest, getattr(self, "current_folder", "")])
+                self._context_show_file_op_result("Move to Folder", result)
                 self._selected.clear()
                 self._load_folder(self.current_folder)
                 self._refresh_tree_stats()
@@ -8848,7 +8758,6 @@ class FileTagger(FTZoomMixin):
             sel = lb.curselection()
             if not sel: return
             cname = cols[sel[0]]
-            from datetime import datetime
             ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             try:
                 data = _read_collection(cname, root)
@@ -9093,7 +9002,6 @@ class FileTagger(FTZoomMixin):
         orig_order  = self.tagged_order[:]
         orig_tagged = set(self.tagged)
         orig_tagged_at = dict(self.tagged_at)
-        from datetime import datetime
         ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         self.tagged     = set(files)
         self.tagged_order = list(files)
@@ -9343,7 +9251,6 @@ class FileTagger(FTZoomMixin):
         """Mark selected files for deletion."""
         if not self._selected:
             self._status("No files selected — use Sel All or Sel Visible first"); return
-        from datetime import datetime
         ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         for orig in self._selected:
             self._culled.add(orig); self._culled_at[orig] = ts
@@ -9370,14 +9277,6 @@ class FileTagger(FTZoomMixin):
         self._repaint_selection()
         self._schedule_cull_save()
         self._update_statusbar()
-
-    def _sel_tag(self):
-        import tkinter.messagebox as mb
-        mb.showinfo("Tag", "Tag is disabled in this version — use Operations.", parent=self.win)
-
-    def _sel_untag(self):
-        import tkinter.messagebox as mb
-        mb.showinfo("Untag", "Untag is disabled in this version — use Operations.", parent=self.win)
 
     def _sel_unmark(self):
         self._ops_remove_from_cull()
@@ -9552,7 +9451,6 @@ class FileTagger(FTZoomMixin):
 
     def _tag_visible(self):
         """Tag all thumbnails currently rendered on screen (the current page)."""
-        from datetime import datetime
         ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         tagged_set = self._shadow_tagged if self._shadow_active else self.tagged
         tagged_at  = self._shadow_tagged_at if self._shadow_active else self.tagged_at
@@ -9573,7 +9471,6 @@ class FileTagger(FTZoomMixin):
             self._status("No files selected — use Sel All or Sel Visible first"); return
         if not self.collection:
             messagebox.showinfo("No collection", "Create or select a collection first.", parent=self.win); return
-        from datetime import datetime
         ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         tagged_set = self._shadow_tagged if self._shadow_active else self.tagged
         tagged_at  = self._shadow_tagged_at if self._shadow_active else self.tagged_at
@@ -10316,8 +10213,7 @@ class FileTagger(FTZoomMixin):
 
     def _warn_thumbnail_size(self, requested, maximum):
         """Warn user their column count makes thumbnails too small."""
-        import tkinter.messagebox as mb
-        mb.showwarning(
+        messagebox.showwarning(
             "Too many columns",
             f"{requested} columns makes thumbnails too small to show the Mark and Tag controls.\n\n"
             f"Maximum for this window width is {maximum} columns.\n\n"
@@ -10421,11 +10317,9 @@ class FileTagger(FTZoomMixin):
     def _show_file_info(self, orig, anchor_btn):
         """Show a persistent floating info popup. First call creates and positions it;
         subsequent calls update content in place without moving the window."""
-        import datetime as _dt2
 
         def _fmt_date(s):
             """Format any date value — float timestamp, EXIF string, or ISO string."""
-            import datetime as _dt3
             if not s: return ""
             try:
                 # Float/int = filesystem timestamp
@@ -10942,7 +10836,6 @@ class FileTagger(FTZoomMixin):
 
     def _run_process_job(self, ops):
         """Write manifest and job script, then branch on test vs production mode."""
-        import subprocess
         temp_folder = ops.get('temp_folder', PROC_TEMP_FOLDER).strip()
         if not temp_folder:
             messagebox.showerror("Temp folder missing", "No temp folder specified.", parent=self.win); return
@@ -11063,8 +10956,7 @@ class FileTagger(FTZoomMixin):
                 if os.name == 'nt':
                     os.startfile(temp_folder)
                 else:
-                    import subprocess as _sp
-                    _sp.Popen(['open' if sys.platform=='darwin' else 'xdg-open', temp_folder])
+                    subprocess.Popen(['open' if sys.platform=='darwin' else 'xdg-open', temp_folder])
             except Exception as e:
                 messagebox.showerror("Cannot open folder", str(e), parent=pw)
 
@@ -11157,8 +11049,7 @@ class FileTagger(FTZoomMixin):
                 if os.name == 'nt':
                     os.startfile(temp_folder)
                 else:
-                    import subprocess as _sp
-                    _sp.Popen(['open' if sys.platform=='darwin' else 'xdg-open', temp_folder])
+                    subprocess.Popen(['open' if sys.platform=='darwin' else 'xdg-open', temp_folder])
             except Exception as e:
                 messagebox.showerror("Cannot open folder", str(e), parent=pw)
 
@@ -12529,14 +12420,29 @@ class FileTagger(FTZoomMixin):
 
         # Table counts
         tables = [
-            ("thumbnails",       "Cached thumbnails"),
+            ("thumbnails",       "Cached thumbnails  (global cache)"),
             ("collections",      "Collections"),
             ("collection_items", "Collection items  (file entries)"),
             ("cull_list",        "Files marked for deletion"),
             ("folder_bookmarks", "Folder bookmarks"),
-            ("file_metadata",    "File metadata / UUID records"),
+            ("file_metadata",    "File metadata / date cache  (global cache)"),
             ("settings",         "Settings entries"),
         ]
+
+        # Pre-fetch global cache counts (separate APPDATA databases, not the project DB)
+        try:
+            _thumb_count = _ftc.stats()["rows"]
+        except Exception:
+            _thumb_count = "—"
+        try:
+            from libraries import ft_metadata_cache as _fmc
+            _meta_count = _fmc.stats()["rows"]
+        except Exception:
+            try:
+                import ft_metadata_cache as _fmc2
+                _meta_count = _fmc2.stats()["rows"]
+            except Exception:
+                _meta_count = "—"
 
         tbl_frame = tk.Frame(inner, bg=SBG); tbl_frame.pack(fill="x", padx=24, pady=4)
         if _db() is None:
@@ -12544,10 +12450,15 @@ class FileTagger(FTZoomMixin):
                      font=("Segoe UI", 11, "bold")).pack(pady=8)
         else:
             for tname, desc in tables:
-                try:
-                    count = ft_db.table_count(_db(), tname)
-                except Exception:
-                    count = "—"
+                if tname == "thumbnails":
+                    count = _thumb_count
+                elif tname == "file_metadata":
+                    count = _meta_count
+                else:
+                    try:
+                        count = ft_db.table_count(_db(), tname)
+                    except Exception:
+                        count = "—"
                 row = tk.Frame(tbl_frame, bg=SBG); row.pack(fill="x", pady=2)
                 tk.Label(row, text=f"{tname}", bg=SBG, fg=STITLE,
                          font=("Courier New", 11, "bold"), width=20, anchor="w").pack(side="left")
@@ -12703,11 +12614,6 @@ class FileTagger(FTZoomMixin):
             _clear_results()
             _scan_results.clear()
 
-            try:
-                from libraries import ft_thumb_cache as _ftc
-            except ImportError:
-                import ft_thumb_cache as _ftc  # type: ignore
-
             # 1. Orphaned thumbnails —————————————————————————————————————————
             status_var.set("Scanning thumbnail cache…")
             dlg.update_idletasks()
@@ -12815,16 +12721,15 @@ class FileTagger(FTZoomMixin):
             scan_btn.config(state="normal", text="  Run Scan  ")
 
         def _fix_all():
-            from tkinter import messagebox as _mb
             total = (len(_scan_results.get("orphan_thumbs", [])) +
                      len(_scan_results.get("broken_coll", [])) +
                      len(_scan_results.get("stale_cull", [])) +
                      len(_scan_results.get("dead_folder_files", [])))
             if total == 0:
-                _mb.showinfo("Nothing to fix", "No issues to fix. Run a scan first.",
+                messagebox.showinfo("Nothing to fix", "No issues to fix. Run a scan first.",
                              parent=dlg)
                 return
-            if not _mb.askyesno("Fix all issues?",
+            if not messagebox.askyesno("Fix all issues?",
                     f"This will:\n\n"
                     f"  • Delete {len(_scan_results.get('orphan_thumbs', []))} orphaned thumbnail(s) from cache\n"
                     f"  • Remove {len(_scan_results.get('broken_coll', []))} broken collection reference(s)\n"
@@ -12833,11 +12738,6 @@ class FileTagger(FTZoomMixin):
                     "Proceed?",
                     parent=dlg):
                 return
-
-            try:
-                from libraries import ft_thumb_cache as _ftc
-            except ImportError:
-                import ft_thumb_cache as _ftc  # type: ignore
 
             fixed = 0
 
@@ -13091,7 +12991,6 @@ def _show_structured_rename_dialog(parent, current_stem, ext, on_apply_cb, zoom_
     """Structured rename dialog — date/who/category/type/description.
     on_apply_cb(new_stem) called on Save. Dialog stays open after Save, ready for next file.
     Closes automatically when zoom_win is destroyed (if supplied)."""
-    import datetime as _dt
     import re as _re
 
     cats = _load_ft_categories()
@@ -13099,7 +12998,7 @@ def _show_structured_rename_dialog(parent, current_stem, ext, on_apply_cb, zoom_
     cat_dict  = cats.get("categories", {})
     cat_names = list(cat_dict.keys())
 
-    today = _dt.date.today()
+    today = datetime.date.today()
 
     # ── Parse existing stem into fields ──────────────────────────────────────
     def _parse_stem(stem):
@@ -13122,7 +13021,7 @@ def _show_structured_rename_dialog(parent, current_stem, ext, on_apply_cb, zoom_
 
     if init_date:
         try:
-            _d = _dt.date.fromisoformat(init_date)
+            _d = datetime.date.fromisoformat(init_date)
             init_dd = str(_d.day); init_mm = str(_d.month); init_yyyy = str(_d.year)
         except:
             init_dd = str(today.day); init_mm = str(today.month); init_yyyy = str(today.year)
@@ -14154,6 +14053,9 @@ def _settings_dialog(parent_win, on_save_cb=None, startup=False):
     tk.Button(bf, text="  Cancel  ", bg=BG2, fg=TEXT_BRIGHT,
               font=("Segoe UI",10), relief="flat", padx=14, pady=6,
               cursor="hand2", command=dlg.destroy).pack(side="left", padx=8)
+    tk.Button(bf, text="  About  ", bg=BG2, fg=TEXT_BRIGHT,
+              font=("Segoe UI",10), relief="flat", padx=14, pady=6,
+              cursor="hand2", command=lambda: (dlg.destroy(), ft._show_about())).pack(side="right", padx=8)
     # wait_window only when called from toolbar (not startup — startup uses callback)
 
 
@@ -14162,7 +14064,7 @@ def _parse_roots_from_text(text):
     roots = []
     for line in text.splitlines():
         line = line.strip()
-        if not line or line.startswith('#'): continue
+        if notline or line.startswith('#'): continue
         # Split on last colon that's not a Windows drive letter
         idx = line.rfind(':')
         while idx > 1:
@@ -14173,7 +14075,7 @@ def _parse_roots_from_text(text):
                 break
             idx = line.rfind(':', 0, idx)
         else:
-            # No name separator — use folder basename
+            # No name separator -- use folder basename
             path = line.strip()
             if path:
                 name = os.path.basename(path.rstrip('/\\')) or path

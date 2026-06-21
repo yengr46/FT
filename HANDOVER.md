@@ -1,5 +1,5 @@
 # FTAPPS – Session Handover
-**Date:** 2026-06-19
+**Date:** 2026-06-21
 **Project:** FTAPPS suite (Python 3.11 tkinter, Windows)  
 **Git repo:** https://github.com/yengr46/FT
 
@@ -11,7 +11,7 @@
 |------|------|------|
 | `helpers/FTVideo.py` | ~1865 lines | **Edit tool ONLY** — bash scripts read stale OneDrive cache and truncate the file |
 | `libraries/ft_widgets.py` | ~1800+ lines | **Edit tool ONLY** — bash sees stale cloud-only stub (~1524 lines); real file is longer |
-| `main/FTmod.py` | ~13748 lines | **Bash patch scripts only** — too large for Edit tool |
+| `main/FTmod.py` | ~14100 lines | **Edit tool OK for small targeted changes** — but the Edit tool silently truncates the file when edits are large or near the end of the file. After every Edit to FTmod.py, run the syntax check (`python3 -c "import ast; ast.parse(open('main/FTmod.py','rb').read().rstrip(b'\\x00'))"`) and repair truncation by appending the missing tail from `git show HEAD:main/FTmod.py \| tail -N`. The file also accumulates null bytes after some repairs — strip with `data.rstrip(b'\\x00')` before writing back. |
 | `libraries/ft_movie.py` | large | **Bash patch scripts only** |
 | `libraries/ft_combine_strip.py` | large | **Bash patch scripts only** |
 | All other files | any | Either tool OK |
@@ -19,6 +19,42 @@
 > **CRITICAL — FTVideo.py truncation incident:** In a prior session a bash patch script read the stale OneDrive cache (~1786 lines), patched it, and wrote it back — silently destroying lines 1788–1865. Recovery required hunting the original content from the session JSONL transcript. Do NOT use bash for any write operation on FTVideo.py or ft_widgets.py.
 
 **OneDrive sync lag:** The bash sandbox mounts the OneDrive folder but may see a cached (stale) version seconds to minutes after the Edit tool writes. For read operations (syntax checks etc.) on FTVideo.py, treat bash results as possibly stale.
+
+---
+
+## Session log — 2026-06-21
+
+### Scroll position preserved after cull/delete (`main/FTmod.py`)
+After confirming deletion, `_execute_cull_delete` now saves `_page_start` and canvas yview before calling `_load_folder`, passes the start via `_page_start_override` so `_show_page` lands on the same page, and restores the yview 300 ms later via `win.after()`.
+
+### Zoom window — date taken (`libraries/ft_zoom.py`)
+Added `_zoom_date_taken(path) -> str` static method to `FTZoomMixin`. Returns "dd MMM yyyy" (e.g. "08 Apr 2026") or `""`. Sources tried in order: `ft_metadata_cache.get_creation_time()` first, then Pillow EXIF tags 36867 / 36868 / 306 for .jpg/.jpeg/.tif/.tiff. **No mtime fallback** (user explicit). `_zoom_update_info()` appends the date after the folder path separated by spaces. The Edit tool truncated `ft_zoom.py` twice during this work; both times repaired by appending missing tail from `git show HEAD`.
+
+### "? FOLDER DELETED" shows folder name
+In the canvas watermark block, when `wm_label` contains "FOLDER", an additional amber text line shows `os.path.basename(os.path.dirname(orig))` below the red strip so the user can identify which folder is missing.
+
+### DB Status dialog — global cache counts
+`_show_db_status` now queries `ft_thumb_cache.stats()` and `ft_metadata_cache.stats()` for the thumbnails and file_metadata rows (they live in `%APPDATA%\FTAPPS\`, not the project DB). Added `stats()` function to `ft_metadata_cache.py`.
+
+### Collection path tab-corruption — root cause + fix
+**Root cause:** `migrate_txt_to_db()` in `ft_db.py` used `line.split("\\t")` (literal two-char string `\t`) instead of `line.split("\t")` (real tab). Old `_tags_*.txt` files stored `path<TAB>timestamp`; the split never fired, so the entire `path<TAB>timestamp` was stored as the path. 469 of 504 collection_items rows corrupted.
+
+**Fix applied:** Changed `"\\t"` → `"\t"` in `ft_db.py` (~line 309).
+
+**Repair script:** `repair_collection_paths.py` (root of FTAPPS_Cowork) strips the tab+timestamp from all corrupted paths in FileTagger.db. **Run once with the app closed.** Creates a `.bak_tab_repair` backup first.
+
+Note: the tab-embedded timestamp also caused "? FOLDER DELETED" on all affected thumbnails because `os.path.exists()` failed on the corrupted path.
+
+### System toolbar layout
+- Removed 331 px dead-space left padding from `cols_size_frame` in row 2 (`padx=(TREE_LEFT_W + 4, 8)` → `padx=(4, 8)`). This shifts the entire second toolbar row left so all buttons fit.
+- Reordered System toolbar buttons: **Settings → Maintenance → DB Status → Project** (4 buttons, always visible).
+- "About" removed from the toolbar; added as a right-side button in the Settings dialog footer.
+
+### Maintenance dialog "Fix All" broken
+`_fix_all()` had a dead local import `from tkinter import messagebox as _mb` (leftover from task #10 refactor) and was calling `_messagebox.askyesno(...)` — a name that doesn't exist. Fixed to use module-level `messagebox`.
+
+### Task added
+- **#16 — Build collection relink/repath tool:** When a root folder is renamed/moved, all stored absolute paths break. Need a dialog to bulk-update paths from old-prefix → new-prefix.
 
 ---
 

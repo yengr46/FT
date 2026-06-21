@@ -153,3 +153,14 @@ def get_many_creation_times(paths: List[str]) -> Dict[str, Optional[str]]:
     except Exception:
         pass
     return result
+
+
+def stats() -> dict:
+    """Return basic cache statistics (row count, db size in bytes)."""
+    try:
+        row = _get_conn().execute("SELECT COUNT(*) FROM file_metadata").fetchone()
+        count = row[0] if row else 0
+        size = os.path.getsize(_db_path())
+        return {"rows": count, "db_bytes": size}
+    except Exception:
+        return {"rows": 0, "db_bytes": 0}

@@ -306,7 +306,7 @@ def migrate_txt_to_db(
                         line = line.strip()
                         if not line or line.startswith("#"):
                             continue
-                        parts = line.split("\\t")
+                        parts = line.split("\t")   # actual tab character
                         fp = parts[0]
                         ts = parts[1] if len(parts) > 1 else now
                         data[fp] = ts
@@ -540,7 +540,7 @@ def table_count(db_conn, table_name):
         return None
     allowed = {
         "collections", "collection_items", "cull_list",
-        "folder_bookmarks", "file_metadata", "settings"
+        "folder_bookmarks", "settings"
     }
     if table_name not in allowed:
         raise ValueError(f"Unsupported table name: {table_name}")
