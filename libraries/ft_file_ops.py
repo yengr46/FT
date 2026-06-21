@@ -244,7 +244,12 @@ def sort_files(paths: Iterable[str], column: str = "name",
 
 
 def delete_files(paths: Iterable[str]) -> FileOpResult:
-    """Delete files from disk.  Directories are never deleted by this function."""
+    """Delete files from disk.  Directories are never deleted by this function.
+
+    Also removes each successfully deleted file from the shared thumbnail cache
+    so standalone apps (FTView, FTVideo, etc.) don't leave orphaned cache entries
+    without needing any knowledge of projects or collections.
+    """
     files = _unique_existing_files(paths)
     result = FileOpResult(operation="delete", requested=list(files))
 
@@ -255,6 +260,17 @@ def delete_files(paths: Iterable[str]) -> FileOpResult:
                 continue
             os.remove(_longpath(src))
             result.deleted.append(src)
+            # Keep thumbnail cache consistent -- remove stale entry immediately.
+            # Best-effort: never let a cache error prevent the deletion completing.
+            try:
+                from libraries import ft_thumb_cache as _ftc
+                _ftc.delete_thumb(src)
+            except Exception:
+                try:
+                    import ft_thumb_cache as _ftc2  # type: ignore
+                    _ftc2.delete_thumb(src)
+                except Exception:
+                    pass
         except Exception as ex:
             result.errors.append((src, str(ex)))
     return result

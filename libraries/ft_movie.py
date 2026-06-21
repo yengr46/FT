@@ -2421,12 +2421,31 @@ class MoviePlayerPanel(tk.Frame):
                     in_pt = _clips[_active].in_point
         self._frame_index = in_pt
         self._playing     = False
-        # Fully stop VLC at EOS so PIL can draw the in_point frame cleanly
+        # Stop VLC at EOS so PIL can draw the in_point frame cleanly.
+        # IMPORTANT: calling player.stop() directly from this context deadlocks
+        # because VLC's MediaPlayerEndReached event thread is still alive and
+        # holds internal locks that player.stop() needs to acquire.  Run it in
+        # a daemon thread so the Tk main loop is never blocked.
         if self._vlc:
-            try:
-                self._vlc.stop()
-            except Exception:
-                pass
+            self._vlc._gen += 1          # invalidate any pending _poll callbacks
+            if self._vlc._poll_id:
+                try:
+                    self.after_cancel(self._vlc._poll_id)
+                except Exception:
+                    pass
+                self._vlc._poll_id = None
+            _player = self._vlc._player
+            _cleanup = self._vlc._cleanup_cut_tmp
+            def _stop_async():
+                try:
+                    _player.stop()
+                except Exception:
+                    pass
+                try:
+                    _cleanup()
+                except Exception:
+                    pass
+            threading.Thread(target=_stop_async, daemon=True).start()
         self._vlc_active = False
         self._vlc_paused = False
         self._update_buttons()

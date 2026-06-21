@@ -257,11 +257,67 @@ def delete_thumb(full_path: str) -> None:
         print(f"ft_thumb_cache.delete_thumb error: {e}")
 
 
+def orphaned_paths_in_folder(folder: str) -> list[str]:
+    """Return distinct cached paths directly inside *folder* whose file no longer exists.
+
+    Used by FTMod to offer a quick clean-up notice when a folder is opened.
+    Only checks one level deep (direct children, not sub-folders).
+    """
+    import os as _os
+    try:
+        base = _os.path.normpath(folder).rstrip("\\/")
+        found: set[str] = set()
+        with _lock:
+            for sep in ("\\", "/"):
+                rows = _db().execute(
+                    "SELECT DISTINCT full_path FROM thumbnails"
+                    " WHERE full_path LIKE ? AND full_path NOT LIKE ?",
+                    (base + sep + "%", base + sep + "%" + sep + "%"),
+                ).fetchall()
+                for (p,) in rows:
+                    found.add(p)
+        return [p for p in found if not _os.path.exists(p)]
+    except Exception as e:
+        print(f"ft_thumb_cache.orphaned_paths_in_folder error: {e}")
+        return []
+
+
+def delete_thumbs_for_paths(paths) -> int:
+    """Remove cached entries for an explicit list of paths.  Returns count removed."""
+    removed = 0
+    try:
+        with _lock:
+            for p in paths:
+    
+                cur = _db().execute("DELETE FROM thumbnails WHERE full_path=?", (p,))
+                removed += cur.rowcount or 0
+            _db().commit()
+    except Exception as e:
+        print(f"ft_thumb_cache.delete_thumbs_for_paths error: {e}")
+    return removed
+
+
+def all_cached_paths() -> list[str]:
+    """Return every distinct path currently in the thumbnail cache.
+
+    Used by the FTMod integrity-check maintenance tool.
+    """
+    try:
+        with _lock:
+            rows = _db().execute(
+                "SELECT DISTINCT full_path FROM thumbnails"
+            ).fetchall()
+        return [r[0] for r in rows]
+    except Exception as e:
+        print(f"ft_thumb_cache.all_cached_paths error: {e}")
+        return []
+
+
 def prune(max_age_days: int = 90) -> int:
     """Delete entries not accessed in max_age_days.  Returns row count removed.
 
     Safe to call periodically (e.g. on app startup, at most once per day).
-    Uses created_at as a proxy for last-accessed — sufficient for a dev-stage
+    Uses created_at as a proxy for last-accessed -- sufficient for a dev-stage
     cache where the cost of regeneration is low.
     """
     cutoff = int(time.time()) - max_age_days * 86_400

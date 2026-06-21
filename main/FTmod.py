@@ -1813,7 +1813,7 @@ class FileTagger(FTZoomMixin):
                 ("Orphans",  "#662266"),("Auto OFF",  "#444444"),
             ]),
             ("system",    "System",    PANEL_BG,row2_centre,None,[
-                ("Settings", "#335577"),("About",    "#335577"),("DB Status", "#2d5a2d"),("Project", "#664422"),
+                ("Settings", "#335577"),("About",    "#335577"),("DB Status", "#2d5a2d"),("Project", "#664422"),("Maintenance", "#553322"),
             ]),
         ]
 
@@ -1849,6 +1849,7 @@ class FileTagger(FTZoomMixin):
             "About":         self._show_about,
             "DB Status":     self._show_db_status,
             "Project":       self._switch_project,
+            "Maintenance":   self._integrity_check_dialog,
         }
 
         _btn_tips = {
@@ -1882,6 +1883,7 @@ class FileTagger(FTZoomMixin):
             "DB Status":     "Show SQLite database status — tables and record counts",
             "Theme":         "Toggle Dark / Light theme (restart to apply)",
             "Project":       "Switch between projects or create a new one",
+            "Maintenance":   "Integrity check — find and clean orphaned thumbnails, broken collection references, and missing files",
         }
 
         for tb_name, tb_label, tb_bg, tb_row, extras_key, tb_btns in _tb_defs:
@@ -2161,6 +2163,8 @@ class FileTagger(FTZoomMixin):
         nav = tk.Frame(right, bg=BG3, height=56)
         nav.pack(side="bottom", fill="x")
         nav.pack_propagate(False)
+        self._statusbar_frame = nav   # used by orphan notice banner
+        self._statusbar_parent = right  # orphan bar packs here, before nav
 
         tk.Label(nav, text=_get_build_string(), bg=BG3, fg=TEXT_BRIGHT,
                  font=("Segoe UI",10), padx=8).pack(side="left")
@@ -3582,6 +3586,82 @@ class FileTagger(FTZoomMixin):
         self._set_folder_label(folder, len(files))
         self._update_left_panel_highlight()
         self._show_page()
+        # Background orphan check — don't delay folder display
+        self.win.after(500, lambda f=folder: self._check_orphan_thumbs(f))
+
+    def _check_orphan_thumbs(self, folder):
+        """Check for thumbnail cache entries whose files no longer exist in *folder*.
+
+        Runs 500 ms after folder load so it never delays the thumbnail grid.
+        Shows a single-line notice in the status bar with a one-click clean-up.
+        """
+        if getattr(self, 'current_folder', '') != folder:
+            return  # user navigated away; skip
+        try:
+            from libraries import ft_thumb_cache as _ftc
+        except ImportError:
+            try:
+                import ft_thumb_cache as _ftc  # type: ignore
+            except ImportError:
+                return
+        try:
+            orphans = _ftc.orphaned_paths_in_folder(folder)
+        except Exception:
+            return
+        if not orphans:
+            return
+        n = len(orphans)
+        msg = f"⚠  {n} orphaned thumbnail{'s' if n != 1 else ''} (files deleted elsewhere)"
+
+        def _clean():
+            try:
+                removed = _ftc.delete_thumbs_for_paths(orphans)
+                self._status(f"✓  Removed {removed} orphaned thumbnail{'s' if removed != 1 else ''} from cache")
+            except Exception as e:
+                self._status(f"Thumbnail cleanup error: {e}")
+
+        # Show in status bar with an inline [Clean up] affordance
+        self._status(msg + "   [click Maintenance ▶ Clean Folder Thumbs to fix]")
+        # Also offer immediate one-click fix via a small popup near the status bar
+        self._show_orphan_notice(n, _clean)
+
+    def _show_orphan_notice(self, count, on_clean):
+        """Show a dismissable yellow banner just above the status bar for orphaned thumbs."""
+        try:
+            existing = getattr(self, '_orphan_bar', None)
+            if existing and existing.winfo_exists():
+                existing.destroy()
+        except Exception:
+            pass
+        try:
+            # Parent is the right panel that contains both the thumbnail grid
+            # and the status bar.  Packing with side="bottom" and before= the
+            # status bar frame puts the notice between the grid and the status bar.
+            parent = getattr(self, '_statusbar_parent', self.win)
+            nav    = getattr(self, '_statusbar_frame', None)
+            bar = tk.Frame(parent, bg="#ffe066", padx=6, pady=3)
+            if nav is not None:
+                bar.pack(side="bottom", fill="x", before=nav)
+            else:
+                bar.pack(side="bottom", fill="x")
+            tk.Label(bar,
+                     text=f"⚠  {count} thumbnail{'s' if count != 1 else ''} cached for files that no longer exist in this folder.",
+                     bg="#ffe066", fg="#333333", font=("Segoe UI", 9)).pack(side="left", padx=4)
+
+            def _do_clean():
+                on_clean()
+                try: bar.destroy()
+                except Exception: pass
+
+            tk.Button(bar, text="Clean up", bg="#cc8800", fg="white",
+                      font=("Segoe UI", 9, "bold"), relief="flat", padx=8,
+                      cursor="hand2", command=_do_clean).pack(side="left", padx=6)
+            tk.Button(bar, text="✕", bg="#ffe066", fg="#555555",
+                      font=("Segoe UI", 9), relief="flat", padx=4,
+                      cursor="hand2", command=bar.destroy).pack(side="right", padx=4)
+            self._orphan_bar = bar
+        except Exception:
+            pass
 
     # ── FTmod file list + preview panel helpers ─────────────────────────────
     def _populate_file_list(self, files):
@@ -4103,7 +4183,10 @@ class FileTagger(FTZoomMixin):
             except Exception as _e:
                 self.win.after(0, self._status, f"Blob write failed: {_e}")
 
-        # Decode all images — every file gets a render entry, no skipping
+        # Decode all images — every file gets a render entry.
+        # Duplicate-render prevention is handled in _add_cell: if _render_one already
+        # created a cell for a file (progressive video thumbnail path), _add_cell returns
+        # early so the batch render doesn't produce a second thumb_widgets entry.
         new_set = {p for p, _ in new_items}
         renders = []
         for i, orig in enumerate(page):
@@ -4266,6 +4349,20 @@ class FileTagger(FTZoomMixin):
         # Compute height from actual grid geometry — more reliable than bbox
         # which can be 0 or stale before all cells are drawn
         cols   = max(1, self._cols)
+        # Re-sort thumb_widgets into visual grid order.  Progressive _render_one cells
+        # for videos are appended before batch _render_chunk cells, so without sorting
+        # _scroll_to_idx (which indexes thumb_widgets by page position) jumps to the
+        # wrong widget.  Sorting by (row, col) from the actual grid restores the right order.
+        try:
+            def _grid_pos(item):
+                try:
+                    gi = item[0].grid_info()
+                    return (int(gi.get('row', 0)), int(gi.get('column', 0)))
+                except Exception:
+                    return (999, 999)
+            self.thumb_widgets.sort(key=_grid_pos)
+        except Exception:
+            pass
         n_cells = len(self.thumb_widgets)
         rows   = max(1, (n_cells + cols - 1) // cols)
         row_h  = self._row_height_px()
@@ -4504,6 +4601,14 @@ class FileTagger(FTZoomMixin):
         try:
             if not self.grid_frame.winfo_exists(): return
         except: return
+
+        # Prevent double-render: the progressive video thumbnail path (_render_one)
+        # fires before the batch _render_chunk via after(0,...) ordering.  If a cell
+        # for this file was already created, skip creating a duplicate canvas — the
+        # existing cell already has correct click bindings and thumbnail image.
+        for _existing in self.thumb_widgets:
+            if _existing[2] == orig:
+                return
 
         # 1-panel and 2-panel use the same FTView shared thumbnail metrics.
 
@@ -6704,14 +6809,14 @@ class FileTagger(FTZoomMixin):
         tk.Label(dlg, text=f"🗑  Delete {len(candidates)} marked files?",
                  bg=BG3, fg=TAGGED_BD, font=("Segoe UI",13,"bold")).pack(pady=(16,6))
         tk.Label(dlg, text=f"{len(candidates)} files marked for deletion",
-                 bg=BG3, fg="white", font=("Segoe UI",10)).pack()
+                 bg=BG3, fg=TEXT_DIM, font=("Segoe UI",10)).pack()
         if in_other:
             tk.Label(dlg, text=f"⚠  {len(in_other)} appear in other collections",
-                     bg=BG3, fg=AMBER, font=("Segoe UI",10,"bold")).pack(pady=2)
+                     bg=BG3, fg=TEXT_DIM, font=("Segoe UI",10,"bold")).pack(pady=2)
         if missing:
             tk.Label(dlg, text=f"  {len(missing)} already missing from disk (will be removed from cull list only)",
-                     bg=BG3, fg="#aaaaaa", font=("Segoe UI",9)).pack()
-        tk.Frame(dlg, bg="#444", height=1).pack(fill="x", padx=20, pady=8)
+                     bg=BG3, fg=TEXT_DIM, font=("Segoe UI",9)).pack()
+        tk.Frame(dlg, bg=HOVER_BD, height=1).pack(fill="x", padx=20, pady=8)
 
         # No default — user must explicitly choose
         action_var = tk.StringVar(value="none")
@@ -6719,31 +6824,32 @@ class FileTagger(FTZoomMixin):
         # Hidden radio set to "none" — ensures all visible buttons start unselected
         tk.Radiobutton(dlg, variable=action_var, value="none").pack_forget()
 
+        _dest_dir = _deleted_dir(root_dir)
         options = [
             ("cull_only",
              "Remove from deletion list only",
              "⚠  Files are NOT moved — they stay in place on disk"),
             ("delete",
              "Move files to _Deleted_Files folder",
-             "Files moved to _FileTagger\\_Deleted_Files. Recover from there if needed."),
+             f"Files moved to:  {_dest_dir}"),
             ("delete_all",
              "Move to _Deleted_Files and remove from all collections",
-             "Same as above, plus removes files from every collection."),
+             f"Same as above, plus removes files from every collection.  Destination: {_dest_dir}"),
         ]
 
         for val, label, sublabel in options:
             fr = tk.Frame(dlg, bg=BG3); fr.pack(fill="x", padx=20, pady=3)
             tk.Radiobutton(fr, text=label, variable=action_var, value=val,
-                           bg=BG3, fg="white", selectcolor=BG2,
-                           activebackground=BG3, activeforeground="white",
+                           bg=BG3, fg=ACCENT, selectcolor=BG3,
+                           activebackground=BG3, activeforeground=ACCENT,
                            font=("Segoe UI",10,"bold"),
                            command=lambda: btn_confirm.config(state="normal")
                            ).pack(anchor="w")
             tk.Label(fr, text="    " + sublabel, bg=BG3,
-                     fg=AMBER if "NOT deleted" in sublabel else "#aaaaaa",
-                     font=("Segoe UI",8,"italic")).pack(anchor="w")
+                     fg=TEXT_DIM,
+                     font=("Segoe UI",8)).pack(anchor="w")
 
-        tk.Frame(dlg, bg="#444", height=1).pack(fill="x", padx=20, pady=8)
+        tk.Frame(dlg, bg=HOVER_BD, height=1).pack(fill="x", padx=20, pady=8)
 
         def on_confirm():
             action = action_var.get()
@@ -6751,10 +6857,11 @@ class FileTagger(FTZoomMixin):
                 messagebox.showwarning("Select an option",
                     "Please select what you want to do.", parent=dlg); return
             if action in ("delete", "delete_all"):
+                n_move = len([c for c in candidates if c not in missing])
                 if not messagebox.askyesno("Move files to _Deleted_Files?",
-                    f"This will move {len([c for c in candidates if c not in missing])} files "
-                    f"to _FileTagger\\_Deleted_Files.\n\n"
-                    "Files on disk are not permanently deleted — you can recover them from that folder.\n\n"
+                    f"This will move {n_move} file{'s' if n_move != 1 else ''} to:\n\n"
+                    f"{_dest_dir}\n\n"
+                    "Files are not permanently deleted — you can recover them from that folder.\n\n"
                     "Are you sure?",
                     parent=dlg): return
             dlg.destroy()
@@ -6765,9 +6872,9 @@ class FileTagger(FTZoomMixin):
                   font=("Segoe UI",10,"bold"), relief="flat", padx=10,
                   cursor="hand2", state="disabled", command=on_confirm)
         btn_confirm.pack(side="left", padx=8)
-        tk.Button(bf, text="  Cancel  ", bg="#444", fg=TEXT_BRIGHT,
-                  font=("Segoe UI",10), relief="flat", padx=10,
-                  cursor="hand2", command=dlg.destroy).pack(side="left", padx=8)
+        tk.Label(bf, text="Cancel", bg=BG3, fg=TEXT_DIM,
+                 font=("Segoe UI",10), cursor="hand2").pack(side="left", padx=12)
+        bf.winfo_children()[-1].bind("<Button-1>", lambda e: dlg.destroy())
 
     def _execute_cull_delete(self, candidates, action, missing, in_other, root_dir):
         """Perform the actual deletion after confirmation."""
@@ -6797,6 +6904,13 @@ class FileTagger(FTZoomMixin):
                     _shutil.move(_longpath(p), dest)
                     self._culled.discard(p); self._culled_at.pop(p, None)
                     self.tagged.discard(p); self.tagged_at.pop(p, None)
+                    # Remove stale thumbnail from cache so the slot is freed and
+                    # won't appear as a hit if the filename is reused later.
+                    try:
+                        from libraries import ft_thumb_cache as _ftc
+                        _ftc.delete_thumb(p)
+                    except Exception:
+                        pass
                     deleted += 1
                 except Exception as e:
                     print(f"Could not move {p}: {e}"); errors += 1
@@ -12342,8 +12456,9 @@ class FileTagger(FTZoomMixin):
     def _show_settings(self):
         """Open the settings dialog from the toolbar."""
         def _after_save():
-            # Reload config and reinitialise
-            _load_config()
+            # on_save() already updated all globals; just refresh the UI.
+            # Do NOT call _load_config() here — it re-reads FileTagger.ini and
+            # resets ROOTS to empty when there is no active_project key in it.
             self._save_current_collection()
             self.mode_cfg = _mode_cfg(self.mode)
             self._update_root_combobox()
@@ -12454,6 +12569,328 @@ class FileTagger(FTZoomMixin):
                   font=("Segoe UI", 11, "bold"), relief="flat",
                   padx=16, pady=8, cursor="hand2",
                   command=dlg.destroy).pack(pady=12)
+
+    # ── Integrity check / maintenance ─────────────────────────────────────────
+    def _integrity_check_dialog(self):
+        """Full database integrity check and maintenance tool.
+
+        Scans:
+          • Thumbnail cache — paths with no file on disk (orphaned thumbs)
+          • All collections  — file entries that no longer exist on disk
+          • Cull / deletion list — file entries that no longer exist on disk
+
+        Reports all findings grouped by issue type, then lets the user
+        fix what can be auto-fixed and notes what requires manual attention.
+        """
+        MBG   = "#f4f4f4"
+        MBDR  = "#553322"
+        MTIT  = "#2b1a10"
+        MDIM  = "#444444"
+        MSUB  = "#553322"
+        MWARN = "#cc2222"
+        MGOOD = "#226655"
+
+        dlg = tk.Toplevel(self.win)
+        dlg.title("Maintenance — Integrity Check")
+        dlg.resizable(True, True)
+        dlg.configure(bg=MBDR)
+        dlg.transient(self.win)
+        dlg.grab_set()
+        self._centre_window(dlg, 760, 580)
+
+        border = tk.Frame(dlg, bg=MBDR, padx=2, pady=2)
+        border.pack(fill="both", expand=True)
+        inner = tk.Frame(border, bg=MBG)
+        inner.pack(fill="both", expand=True)
+
+        tk.Label(inner, text="🔧  Integrity Check & Maintenance", bg=MBG, fg=MTIT,
+                 font=("Segoe UI", 18, "bold")).pack(pady=(16, 2))
+        tk.Label(inner, text="Scans the thumbnail cache, collections, and deletion list for missing or stale references.",
+                 bg=MBG, fg=MDIM, font=("Segoe UI", 9), wraplength=700).pack(pady=(0, 8))
+        tk.Frame(inner, bg="#cccccc", height=1).pack(fill="x", padx=20, pady=(0, 8))
+
+        # ── Scrollable results area ──────────────────────────────────────────
+        results_frame = tk.Frame(inner, bg=MBG)
+        results_frame.pack(fill="both", expand=True, padx=16)
+
+        canvas = tk.Canvas(results_frame, bg=MBG, bd=0, highlightthickness=0)
+        vsb = tk.Scrollbar(results_frame, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        scroll_inner = tk.Frame(canvas, bg=MBG)
+        scroll_window = canvas.create_window((0, 0), window=scroll_inner, anchor="nw")
+
+        def _on_configure(e):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        scroll_inner.bind("<Configure>", _on_configure)
+
+        def _on_canvas_resize(e):
+            canvas.itemconfig(scroll_window, width=e.width)
+        canvas.bind("<Configure>", _on_canvas_resize)
+
+        def _scroll_wheel(e):
+            canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _scroll_wheel)
+
+        status_var = tk.StringVar(value="Click 'Run Scan' to begin.")
+        status_lbl = tk.Label(inner, textvariable=status_var, bg=MBG, fg=MDIM,
+                              font=("Segoe UI", 9))
+        status_lbl.pack(pady=(4, 0))
+
+        # ── Button bar ───────────────────────────────────────────────────────
+        btn_frame = tk.Frame(inner, bg=MBG)
+        btn_frame.pack(fill="x", padx=16, pady=10)
+
+        scan_btn  = tk.Button(btn_frame, text="  Run Scan  ", bg=MSUB, fg="white",
+                              font=("Segoe UI", 10, "bold"), relief="flat",
+                              padx=12, pady=6, cursor="hand2")
+        scan_btn.pack(side="left", padx=(0, 8))
+
+        fix_btn   = tk.Button(btn_frame, text="  Fix All Issues  ", bg="#cc2222", fg="white",
+                              font=("Segoe UI", 10, "bold"), relief="flat",
+                              padx=12, pady=6, cursor="hand2", state="disabled")
+        fix_btn.pack(side="left", padx=(0, 8))
+
+        tk.Button(btn_frame, text="  Close  ", bg="#777777", fg="white",
+                  font=("Segoe UI", 10, "bold"), relief="flat",
+                  padx=12, pady=6, cursor="hand2",
+                  command=dlg.destroy).pack(side="right")
+
+        # ── Scan logic ───────────────────────────────────────────────────────
+        _scan_results = {}
+
+        def _add_section(title, colour, items, fix_label=None, fix_fn=None, note=None):
+            """Render one results section in scroll_inner."""
+            sec = tk.Frame(scroll_inner, bg=MBG, bd=0)
+            sec.pack(fill="x", pady=(6, 2))
+            hdr = tk.Frame(sec, bg=colour, padx=6, pady=4)
+            hdr.pack(fill="x")
+            tk.Label(hdr, text=title, bg=colour, fg="white",
+                     font=("Segoe UI", 10, "bold"), anchor="w").pack(side="left")
+            count_lbl = tk.Label(hdr, text=f"{len(items)} issue{'s' if len(items) != 1 else ''}",
+                                 bg=colour, fg="white",
+                                 font=("Segoe UI", 10, "bold"), anchor="e")
+            count_lbl.pack(side="right")
+
+            body = tk.Frame(sec, bg="#ffffff", bd=0, padx=8, pady=4)
+            body.pack(fill="x")
+
+            if not items:
+                tk.Label(body, text="✓  No issues found", bg="#ffffff", fg=MGOOD,
+                         font=("Segoe UI", 9, "bold"), anchor="w").pack(anchor="w")
+            else:
+                # Show first 15, summarise rest
+                for p in items[:15]:
+                    tk.Label(body, text=f"  • {p}", bg="#ffffff", fg=MDIM,
+                             font=("Segoe UI", 8), anchor="w", wraplength=680).pack(anchor="w")
+                if len(items) > 15:
+                    tk.Label(body, text=f"  … and {len(items) - 15} more",
+                             bg="#ffffff", fg=MDIM,
+                             font=("Segoe UI", 8, "italic"), anchor="w").pack(anchor="w")
+                if note:
+                    tk.Label(body, text=f"ℹ  {note}", bg="#ffffff", fg="#666666",
+                             font=("Segoe UI", 8), anchor="w", wraplength=680).pack(anchor="w", pady=(4, 0))
+
+        def _clear_results():
+            for w in scroll_inner.winfo_children():
+                w.destroy()
+
+        def _run_scan():
+            scan_btn.config(state="disabled", text="  Scanning…  ")
+            dlg.update_idletasks()
+            _clear_results()
+            _scan_results.clear()
+
+            try:
+                from libraries import ft_thumb_cache as _ftc
+            except ImportError:
+                import ft_thumb_cache as _ftc  # type: ignore
+
+            # 1. Orphaned thumbnails —————————————————————————————————————————
+            status_var.set("Scanning thumbnail cache…")
+            dlg.update_idletasks()
+            try:
+                all_paths = _ftc.all_cached_paths()
+                orphan_thumbs = [p for p in all_paths if not os.path.exists(p)]
+            except Exception as e:
+                orphan_thumbs = []
+                tk.Label(scroll_inner, text=f"Thumbnail scan error: {e}", bg=MBG,
+                         fg=MWARN, font=("Segoe UI", 9)).pack(anchor="w", padx=8)
+            _scan_results["orphan_thumbs"] = orphan_thumbs
+
+            title_col = MWARN if orphan_thumbs else MGOOD
+            _add_section(
+                "Orphaned thumbnails  (cached but file missing)",
+                title_col, orphan_thumbs,
+                fix_label="Delete orphaned thumbnails from cache",
+            )
+
+            # 2. Broken collection file references ————————————————————————————
+            status_var.set("Scanning collections…")
+            dlg.update_idletasks()
+            broken_coll = []
+            try:
+                if _db() is not None:
+                    rows = _db().execute(
+                        "SELECT DISTINCT ci.path, c.name FROM collection_items ci"
+                        " JOIN collections c ON c.id = ci.collection_id"
+                    ).fetchall()
+                    broken_coll = [(p, cname) for p, cname in rows if not os.path.exists(p)]
+            except Exception as e:
+                tk.Label(scroll_inner, text=f"Collection scan error: {e}", bg=MBG,
+                         fg=MWARN, font=("Segoe UI", 9)).pack(anchor="w", padx=8)
+            _scan_results["broken_coll"] = broken_coll
+
+            title_col = MWARN if broken_coll else MGOOD
+            broken_coll_display = [f"{p}  (in: {cn})" for p, cn in broken_coll]
+            _add_section(
+                "Broken collection references  (file missing from disk)",
+                title_col, broken_coll_display,
+                note="These will be removed from their collection. The collection itself is kept.",
+            )
+
+            # 3. Stale cull / deletion list entries ————————————————————————————
+            status_var.set("Scanning deletion list…")
+            dlg.update_idletasks()
+            stale_cull = []
+            try:
+                if _db() is not None:
+                    rows = _db().execute(
+                        "SELECT path FROM cull_list"
+                    ).fetchall()
+                    stale_cull = [p for (p,) in rows if not os.path.exists(p)]
+            except Exception as e:
+                tk.Label(scroll_inner, text=f"Deletion list scan error: {e}", bg=MBG,
+                         fg=MWARN, font=("Segoe UI", 9)).pack(anchor="w", padx=8)
+            _scan_results["stale_cull"] = stale_cull
+
+            title_col = MWARN if stale_cull else MGOOD
+            _add_section(
+                "Stale deletion-list entries  (file no longer exists)",
+                title_col, stale_cull,
+                note="These entries will be removed from the deletion list.",
+            )
+
+            # 4. Cache entries for folders that no longer exist —————————————
+            status_var.set("Scanning for dead folder roots…")
+            dlg.update_idletasks()
+            dead_folder_paths = []
+            try:
+                folder_cache: dict[str, int] = {}
+                for p in all_paths:
+                    d = os.path.dirname(p)
+                    folder_cache[d] = folder_cache.get(d, 0) + 1
+                dead_folders = {d: n for d, n in folder_cache.items()
+                                if not os.path.isdir(d)}
+                dead_folder_paths = [f"{d}  ({n} thumbnail{'s' if n != 1 else ''})"
+                                     for d, n in sorted(dead_folders.items())]
+                # Also collect the actual file paths for fixing
+                _scan_results["dead_folder_files"] = [
+                    p for p in all_paths if os.path.dirname(p) in dead_folders
+                ]
+            except Exception:
+                _scan_results["dead_folder_files"] = []
+
+            title_col = MWARN if dead_folder_paths else MGOOD
+            _add_section(
+                "Thumbnails for folders that no longer exist",
+                title_col, dead_folder_paths,
+                note="These are likely from folders moved or renamed outside FileTagger. "
+                     "'Fix All' will remove their thumbnails. To re-index under a new path, "
+                     "navigate to the new folder and generate thumbnails.",
+            )
+
+            # ── Summary ─────────────────────────────────────────────────────
+            total = (len(orphan_thumbs) + len(broken_coll) +
+                     len(stale_cull) + len(dead_folder_paths))
+            if total == 0:
+                status_var.set("✓  All checks passed — no issues found.")
+                fix_btn.config(state="disabled")
+            else:
+                status_var.set(f"Found {total} issue{'s' if total != 1 else ''} across {sum([bool(orphan_thumbs), bool(broken_coll), bool(stale_cull), bool(dead_folder_paths)])} category/categories.")
+                fix_btn.config(state="normal")
+
+            scan_btn.config(state="normal", text="  Run Scan  ")
+
+        def _fix_all():
+            from tkinter import messagebox as _mb
+            total = (len(_scan_results.get("orphan_thumbs", [])) +
+                     len(_scan_results.get("broken_coll", [])) +
+                     len(_scan_results.get("stale_cull", [])) +
+                     len(_scan_results.get("dead_folder_files", [])))
+            if total == 0:
+                _mb.showinfo("Nothing to fix", "No issues to fix. Run a scan first.",
+                             parent=dlg)
+                return
+            if not _mb.askyesno("Fix all issues?",
+                    f"This will:\n\n"
+                    f"  • Delete {len(_scan_results.get('orphan_thumbs', []))} orphaned thumbnail(s) from cache\n"
+                    f"  • Remove {len(_scan_results.get('broken_coll', []))} broken collection reference(s)\n"
+                    f"  • Remove {len(_scan_results.get('stale_cull', []))} stale deletion-list entries\n"
+                    f"  • Delete thumbnails for {len(_scan_results.get('dead_folder_files', []))} files in missing folders\n\n"
+                    "Proceed?",
+                    parent=dlg):
+                return
+
+            try:
+                from libraries import ft_thumb_cache as _ftc
+            except ImportError:
+                import ft_thumb_cache as _ftc  # type: ignore
+
+            fixed = 0
+
+            # Fix 1: orphaned thumbnails
+            ot = _scan_results.get("orphan_thumbs", [])
+            if ot:
+                try:
+                    _ftc.delete_thumbs_for_paths(ot)
+                    fixed += len(ot)
+                except Exception as e:
+                    status_var.set(f"Error cleaning orphaned thumbs: {e}")
+
+            # Fix 2: broken collection references
+            bc = [p for p, _ in _scan_results.get("broken_coll", [])]
+            if bc and _db() is not None:
+                try:
+                    ft_db.remove_collection_items(_db(), bc)
+                    fixed += len(bc)
+                except Exception as e:
+                    status_var.set(f"Error removing collection refs: {e}")
+
+            # Fix 3: stale cull list
+            sc = _scan_results.get("stale_cull", [])
+            if sc and _db() is not None:
+                try:
+                    _db().executemany("DELETE FROM cull_list WHERE path=?",
+                                      [(p,) for p in sc])
+                    _db().commit()
+                    fixed += len(sc)
+                except Exception as e:
+                    status_var.set(f"Error cleaning deletion list: {e}")
+
+            # Fix 4: dead folder thumbnails (already covered if in orphan_thumbs,
+            # but dead_folder_files may include additional ones from moved folders
+            # that still exist as files at old paths — unlikely, but be safe)
+            dff = _scan_results.get("dead_folder_files", [])
+            extra = [p for p in dff if p not in set(ot)]
+            if extra:
+                try:
+                    _ftc.delete_thumbs_for_paths(extra)
+                    fixed += len(extra)
+                except Exception as e:
+                    status_var.set(f"Error cleaning dead-folder thumbs: {e}")
+
+            status_var.set(f"✓  Fixed {fixed} issue{'s' if fixed != 1 else ''}. Re-running scan…")
+            fix_btn.config(state="disabled")
+            dlg.after(400, _run_scan)
+
+        scan_btn.config(command=_run_scan)
+        fix_btn.config(command=_fix_all)
+
+        # Auto-run scan on open
+        dlg.after(100, _run_scan)
 
     # ── Misc ──────────────────────────────────────────────────────────────────
     def _build_nav_float(self):
@@ -13474,9 +13911,11 @@ def _settings_dialog(parent_win, on_save_cb=None, startup=False):
     vsb.pack(side="right", fill="y")
     canvas_s.pack(side="left", fill="both", expand=True)
     inner = tk.Frame(canvas_s, bg=BG3)
-    canvas_s.create_window((0,0), window=inner, anchor="nw")
+    _inner_win_id = canvas_s.create_window((0,0), window=inner, anchor="nw")
     inner.bind("<Configure>", lambda e: canvas_s.configure(
         scrollregion=canvas_s.bbox("all")))
+    # Force inner frame to fill the full canvas width so Entry widgets expand properly
+    canvas_s.bind("<Configure>", lambda e: canvas_s.itemconfig(_inner_win_id, width=e.width))
 
     def section(text):
         tk.Frame(inner, bg=HOVER_BD, height=1).pack(fill="x", pady=(12,4))
@@ -13564,7 +14003,7 @@ def _settings_dialog(parent_win, on_save_cb=None, startup=False):
         le = tk.Entry(row_f, textvariable=lv, bg=BG2, fg=TEXT_BRIGHT,
                       insertbackground=TEXT_BRIGHT, relief="flat",
                       highlightthickness=1, highlightbackground=HOVER_BD,
-                      font=("Segoe UI",9), width=14)
+                      font=("Segoe UI",9), width=18)
         le.pack(side="left", padx=(4,0))
         item = [pv, lv, row_f, None]
         def _remove_root(row_f=row_f, item=item):
@@ -13652,6 +14091,15 @@ def _settings_dialog(parent_win, on_save_cb=None, startup=False):
         try:
             new_db_path = db_var.get().strip() or _db_default_path()
             active_name = _active_project_name_runtime()
+            # Fallback: if no active project is in memory or FileTagger.ini,
+            # check Projects.ini — if there's exactly one project, use it.
+            if not active_name:
+                try:
+                    _all_projs = _load_projects()
+                    if len(_all_projs) == 1:
+                        active_name = next(iter(_all_projs))
+                except Exception:
+                    pass
             lines = [
                 "[display]",
                 f"thumb_size = {THUMB_SIZE}",
